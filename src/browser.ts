@@ -90,6 +90,18 @@ export class Page {
   async selectTab(index: number): Promise<void> {
     await this.call('tools/call', { name: 'browser_tabs', arguments: { action: 'select', index } });
   }
+
+  async networkRequests(includeStatic: boolean = false): Promise<any> {
+    return this.call('tools/call', { name: 'browser_network_requests', arguments: { includeStatic } });
+  }
+
+  async consoleMessages(level: string = 'info'): Promise<any> {
+    return this.call('tools/call', { name: 'browser_console_messages', arguments: { level } });
+  }
+
+  async scroll(direction: string = 'down', amount: number = 500): Promise<void> {
+    await this.call('tools/call', { name: 'browser_press_key', arguments: { key: direction === 'down' ? 'PageDown' : 'PageUp' } });
+  }
 }
 
 /**
