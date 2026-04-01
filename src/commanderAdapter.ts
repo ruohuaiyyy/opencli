@@ -70,6 +70,13 @@ export function registerCommandToProgram(siteCmd: Command, cmd: CliCommand): voi
     .option('-f, --format <fmt>', 'Output format: table, json, yaml, md, csv', 'table')
     .option('-v, --verbose', 'Debug output', false);
 
+  // ── Account routing: xiaohongshu commands get --account option ──
+  // This is scoped strictly to xiaohongshu — no other sites are affected.
+  // The execution.ts layer reads kwargs.account and routes to the correct daemon port.
+  if (cmd.site === 'xiaohongshu' && cmd.name !== 'accounts') {
+    subCmd.option('--account <name>', 'Xiaohongshu account name (see: opencli xiaohongshu accounts list)');
+  }
+
   subCmd.addHelpText('after', formatRegistryHelpText(cmd));
 
   subCmd.action(async (...actionArgs: unknown[]) => {

@@ -508,10 +508,24 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
       await startServe({ port: parseInt(opts.port) });
     });
 
+  // ── Xiaohongshu account management ────────────────────────────────────────
+
+  const xiaohongshuCmd = program.command('xiaohongshu').description('xiaohongshu commands');
+  xiaohongshuCmd
+    .command('accounts')
+    .description('Manage Xiaohongshu creator accounts (multi-account support)')
+    .argument('[subcommand]', 'Subcommand: list, add, remove, switch')
+    .option('--name <name>', 'Account name')
+    .action(async (subcommand, opts) => {
+      const { handleAccountsCommand } = await import('./clis/xiaohongshu/accounts.js');
+      handleAccountsCommand(subcommand, opts);
+    });
+
   // ── Dynamic adapter commands ──────────────────────────────────────────────
 
   const siteGroups = new Map<string, Command>();
   siteGroups.set('antigravity', antigravityCmd);
+  siteGroups.set('xiaohongshu', xiaohongshuCmd);
   registerAllCommands(program, siteGroups);
 
   // ── Unknown command fallback ──────────────────────────────────────────────

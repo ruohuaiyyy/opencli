@@ -21,6 +21,7 @@ import { emitHook, type HookContext } from './hooks.js';
 import { checkDaemonStatus } from './browser/discover.js';
 import { PKG_VERSION } from './version.js';
 import chalk from 'chalk';
+import { resolveXhsDaemonPort } from './clis/xiaohongshu/account-config.js';
 
 const _loadedModules = new Set<string>();
 
@@ -150,49 +151,73 @@ export async function executeCommand(
   };
   await emitHook('onBeforeExecute', hookCtx);
 
+  // ── Account routing: xiaohongshu commands route to account-specific daemon port ──
+  // This is the ONLY change needed for multi-account support. The daemon-client.ts
+  // already reads OPENCLI_DAEMON_PORT, so we just set it before execution.
+  // Scoped strictly to xiaohongshu — no other sites are affected.
+  if (cmd.site === 'xiaohongshu') {
+    const accountName = kwargs.account ? String(kwargs.account) : undefined;
+    const port = resolveXhsDaemonPort(accountName);
+    if (port !== 19825) {
+      process.env.OPENCLI_DAEMON_PORT = String(port);
+    }
+  }
+
   let result: unknown;
   try {
     if (shouldUseBrowserSession(cmd)) {
-      // ── Fail-fast: only when daemon is UP but extension is not connected ──
-      // If daemon is not running, let browserSession() handle auto-start as usual.
-      // We only short-circuit when the daemon confirms the extension is missing —
-      // that's a clear setup gap, not a transient startup state.
-      // Use a short timeout: localhost responds in <50ms when running.
-      // 300ms avoids a full 2s wait on cold-start (daemon not yet running).
-      const status = await checkDaemonStatus({ timeout: 300 });
-      if (status.running && !status.extensionConnected) {
-        throw new BrowserConnectError(
-          'Browser Bridge extension not connected',
-          'Install the Browser Bridge:\n' +
-          '  1. Download: https://github.com/jackwener/opencli/releases\n' +
-          '  2. chrome://extensions → Developer Mode → Load unpacked\n' +
-          '  Then run: opencli doctor',
-        );
-      }
-      // ── Version mismatch: warn but don't block ──
-      if (status.extensionVersion && status.extensionVersion !== PKG_VERSION) {
-        process.stderr.write(
-          chalk.yellow(`⚠  Extension v${status.extensionVersion} ≠ CLI v${PKG_VERSION} — consider updating the extension.\n`)
-        );
-      }
-
-      ensureRequiredEnv(cmd);
-      const BrowserFactory = getBrowserFactory();
-      result = await browserSession(BrowserFactory, async (page) => {
-        const preNavUrl = resolvePreNav(cmd);
-        if (preNavUrl) {
-          try {
-            await page.goto(preNavUrl);
-            await page.wait(2);
-          } catch (err) {
-            if (debug) console.error(`[pre-nav] Failed to navigate to ${preNavUrl}: ${err instanceof Error ? err.message : err}`);
+      // ── Auto-retry: MV3 Service Worker may sleep, extension reconnects within seconds ──
+      const maxRetries = 2;
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        // ── Fail-fast: only when daemon is UP but extension is not connected ──
+        // If daemon is not running, let browserSession() handle auto-start as usual.
+        // We only short-circuit when the daemon confirms the extension is missing —
+        // that's a clear setup gap, not a transient startup state.
+        // Use a short timeout: localhost responds in <50ms when running.
+        // 300ms avoids a full 2s wait on cold-start (daemon not yet running).
+        const status = await checkDaemonStatus({ timeout: 300 });
+        if (status.running && !status.extensionConnected) {
+          if (attempt < maxRetries) {
+            // Extension may have been sleeping (MV3 Service Worker idle timeout).
+            // Wait briefly for the keepalive alarm to reconnect, then retry.
+            if (debug) console.error('[auto-retry] Extension not connected, waiting 2s for reconnect...');
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
           }
+          throw new BrowserConnectError(
+            'Browser Bridge extension not connected',
+            'Install the Browser Bridge:\n' +
+            '  1. Download: https://github.com/jackwener/opencli/releases\n' +
+            '  2. chrome://extensions → Developer Mode → Load unpacked\n' +
+            '  Then run: opencli doctor',
+          );
         }
-        return runWithTimeout(runCommand(cmd, page, kwargs, debug), {
-          timeout: cmd.timeoutSeconds ?? DEFAULT_BROWSER_COMMAND_TIMEOUT,
-          label: fullName(cmd),
-        });
-      }, { workspace: `site:${cmd.site}` });
+        // ── Version mismatch: warn but don't block ──
+        if (status.extensionVersion && status.extensionVersion !== PKG_VERSION) {
+          process.stderr.write(
+            chalk.yellow(`⚠  Extension v${status.extensionVersion} ≠ CLI v${PKG_VERSION} — consider updating the extension.\n`)
+          );
+        }
+
+        ensureRequiredEnv(cmd);
+        const BrowserFactory = getBrowserFactory();
+        result = await browserSession(BrowserFactory, async (page) => {
+          const preNavUrl = resolvePreNav(cmd);
+          if (preNavUrl) {
+            try {
+              await page.goto(preNavUrl);
+              await page.wait(2);
+            } catch (err) {
+              if (debug) console.error(`[pre-nav] Failed to navigate to ${preNavUrl}: ${err instanceof Error ? err.message : err}`);
+            }
+          }
+          return runWithTimeout(runCommand(cmd, page, kwargs, debug), {
+            timeout: cmd.timeoutSeconds ?? DEFAULT_BROWSER_COMMAND_TIMEOUT,
+            label: fullName(cmd),
+          });
+        }, { workspace: `site:${cmd.site}` });
+        break; // success, exit retry loop
+      }
     } else {
       // Non-browser commands: apply timeout only when explicitly configured.
       const timeout = cmd.timeoutSeconds;

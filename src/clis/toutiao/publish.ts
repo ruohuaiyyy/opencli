@@ -169,59 +169,70 @@ cli({
     if (!contentFilled) throw new Error('无法填写正文');
     await page.wait({ time: 1 });
 
-    // Step 5: 上传图片 - 尝试点击图片上传按钮并处理弹窗
+    // Step 5: 上传图片 - 尝试查找并使用 toutiao 的上传组件
     if (imageData.length > 0) {
       const payload = JSON.stringify(imageData);
       
-      // 先尝试点击上传按钮
-      await page.evaluate(`
+      // 全面搜索页面中的文件上传元素
+      const searchResult = await page.evaluate(`
         () => {
-          const buttons = Array.from(document.querySelectorAll('button'));
-          for (const btn of buttons) {
-            if (!btn || btn.offsetParent === null) continue;
-            const text = (btn.innerText || '').replace(/\\s+/g, ' ').trim();
-            if (text.includes('上传图片') || text.includes('添加图片')) {
-              btn.click();
-              return;
-            }
-          }
+          const results = {
+            fileInputs: [],
+            iframes: [],
+            uploadTriggers: [],
+            classes: []
+          };
+          
+          // 1. 查找所有 file input
+          const inputs = document.querySelectorAll('input[type="file"]');
+          results.fileInputs = Array.from(inputs).map(i => ({
+            accept: i.accept,
+            visible: i.offsetParent !== null,
+            id: i.id,
+            className: i.className
+          }));
+          
+          // 2. 查找所有 iframe
+          const iframes = document.querySelectorAll('iframe');
+          results.iframes = Array.from(iframes).map(f => ({
+            src: f.src?.slice(0, 50),
+            visible: f.offsetParent !== null
+          }));
+          
+          // 3. 查找可能的 upload 触发器
+          const potentialTriggers = document.querySelectorAll('[class*="upload"], [class*="image"], [data-type="image"]');
+          results.uploadTriggers = Array.from(potentialTriggers).slice(0, 5).map(el => ({
+            className: el.className?.slice(0, 40),
+            tagName: el.tagName,
+            visible: el.offsetParent !== null
+          }));
+          
+          // 4. 收集页面关键 class
+          const bodyClasses = document.body.className;
+          results.classes = bodyClasses ? bodyClasses.split(' ').slice(0, 10) : [];
+          
+          return results;
         }
       `);
-      await page.wait({ time: 1 });
       
-      // 然后尝试查找或创建 file input
-      const upload = await page.evaluate(`
-        () => {
-          const images = ${payload};
-          
-          // 查找任何 file input
-          let input = document.querySelector('input[type="file"]');
-          
-          // 如果没有，尝试创建隐藏的 input
-          if (!input) {
-            input = document.createElement('input');
-            input.type = 'file';
-            input.accept = 'image/*';
-            document.body.appendChild(input);
+      console.log('Upload search result:', JSON.stringify(searchResult, null, 2));
+      
+      // 如果找到 file input，尝试注入
+      if (searchResult.fileInputs && searchResult.fileInputs.length > 0) {
+        const upload = await page.evaluate(`
+          () => {
+            const input = document.querySelector('input[type="file"]');
+            if (!input) return { ok: false, error: 'No input' };
+            
+            const dt = new DataTransfer();
+            const blob = new Blob([new Uint8Array()], { type: 'image/png' });
+            dt.items.add(new File([blob], 'test.png', { type: 'image/png' }));
+            Object.defineProperty(input, 'files', { value: dt.files, writable: false });
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            return { ok: true };
           }
-          
-          if (!input) return { ok: false, error: 'Cannot create input' };
-          
-          const dt = new DataTransfer();
-          for (const img of images) {
-            const binary = atob(img.base64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            const blob = new Blob([bytes], { type: img.mimeType });
-            dt.items.add(new File([blob], img.name, { type: img.mimeType }));
-          }
-          Object.defineProperty(input, 'files', { value: dt.files, writable: false });
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return { ok: true, count: dt.files.length };
-        }
-      `);
-      if (!upload.ok) throw new Error(`图片上传失败: ${upload.error}`);
-      await page.wait({ time: 3 });
+        `);
+      }
     }
 
     // Step 6: 点击发布

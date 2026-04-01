@@ -29,15 +29,17 @@ const UPLOAD_SETTLE_MS = 3000;
 
 /** Selectors for the title field, ordered by priority (new UI first). */
 const TITLE_SELECTORS = [
-  // New creator center (2026-03) uses contenteditable for the title field.
-  // Placeholder observed: "填写标题会有更多赞哦"
-  '[contenteditable="true"][placeholder*="标题"]',
-  '[contenteditable="true"][placeholder*="赞"]',
-  '[contenteditable="true"][class*="title"]',
-  'input[maxlength="20"]',
-  'input[class*="title"]',
+  // New creator center (2026-03) - specific placeholder "填写标题会有更多赞哦"
+  // This must come FIRST to avoid matching hidden Vue binding inputs
+  'input[placeholder*="填写标题"]',
+  'input[placeholder*="更多赞"]',
+  // Generic placeholder matching
   'input[placeholder*="标题"]',
   'input[placeholder*="title" i]',
+  // Class-based selectors
+  'input.d-text',
+  'input[class*="title"]',
+  'input[maxlength="20"]',
   '.title-input input',
   '.note-title input',
   'input[maxlength]',
@@ -143,28 +145,62 @@ async function waitForUploads(page: IPage, maxWaitMs = 30_000): Promise<void> {
 async function fillField(page: IPage, selectors: string[], text: string, fieldName: string): Promise<void> {
   const result: { ok: boolean; sel?: string } = await page.evaluate(`
     (function(selectors, text) {
+      // For input elements, we need to find the best match based on placeholder
+      const bestCandidate = { el: null, sel: null, priority: -1 };
+      
       for (const sel of selectors) {
         const candidates = document.querySelectorAll(sel);
         for (const el of candidates) {
           if (!el || el.offsetParent === null) continue;
-          el.focus();
+          
+          // Calculate priority: prefer elements with placeholder containing "标题" or "赞"
+          let priority = 0;
           if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-            el.value = '';
-            document.execCommand('selectAll', false);
-            document.execCommand('insertText', false, text);
-            el.dispatchEvent(new Event('input', { bubbles: true }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-          } else {
-            // contenteditable
-            el.textContent = '';
-            document.execCommand('selectAll', false);
-            document.execCommand('insertText', false, text);
-            el.dispatchEvent(new Event('input', { bubbles: true }));
+            const placeholder = (el.getAttribute('placeholder') || '').toLowerCase();
+            if (placeholder.includes('填写')) priority = 100;
+            else if (placeholder.includes('标题')) priority = 80;
+            else if (placeholder.includes('赞')) priority = 70;
           }
-          return { ok: true, sel };
+          
+          // Only update if this has higher priority
+          if (priority > bestCandidate.priority) {
+            bestCandidate.el = el;
+            bestCandidate.sel = sel;
+            bestCandidate.priority = priority;
+          }
         }
       }
-      return { ok: false };
+      
+      const el = bestCandidate.el;
+      const sel = bestCandidate.sel;
+      if (!el) return { ok: false };
+      
+      el.focus();
+      if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+        el.value = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        // Use native input value setter which triggers React/Vue listeners
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(el, text);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        // contenteditable - use innerText which triggers framework listeners better than textContent
+        el.innerText = '';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        // Use Range API for reliable insertion
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(text));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return { ok: true, sel };
     })(${JSON.stringify(selectors)}, ${JSON.stringify(text)})
   `);
   if (!result.ok) {
@@ -480,6 +516,47 @@ cli({
 
     // ── Step 7: Publish or save draft ─────────────────────────────────────────
     const actionLabels = isDraft ? ['暂存离开', '存草稿'] : ['发布', '发布笔记'];
+    
+    // Debug: Check current page state
+    const debugState = await page.evaluate(`
+      () => {
+        const results = {
+          titleInput: '',
+          contentInput: '',
+          buttons: []
+        };
+        
+        // Check title input
+        const titleEls = document.querySelectorAll('input[placeholder*="填写标题"], input[placeholder*="标题"]');
+        for (const el of titleEls) {
+          if (el.offsetParent !== null) {
+            results.titleInput = el.value || el.innerText || '';
+            break;
+          }
+        }
+        
+        // Check content input
+        const contentEls = document.querySelectorAll('[contenteditable="true"]');
+        for (const el of contentEls) {
+          if (el.offsetParent !== null && el.className.includes('ProseMirror')) {
+            results.contentInput = (el.innerText || '').slice(0, 50);
+            break;
+          }
+        }
+        
+        // List all visible buttons
+        document.querySelectorAll('button, [role="button"]').forEach(btn => {
+          if (btn.offsetParent !== null && !btn.disabled) {
+            const text = (btn.innerText || btn.textContent || '').trim();
+            if (text) results.buttons.push(text.slice(0, 20));
+          }
+        });
+        
+        return results;
+      }
+    `);
+    console.log('[DEBUG] Page state before publish:', JSON.stringify(debugState, null, 2));
+    
     const btnClicked: boolean = await page.evaluate(`
       (labels => {
         const buttons = document.querySelectorAll('button, [role="button"]');
@@ -490,13 +567,17 @@ cli({
             btn.offsetParent !== null &&
             !btn.disabled
           ) {
+            // Try multiple click methods for reliability
             btn.click();
+            // Also dispatch mouse events for Vue/React compatibility
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             return true;
           }
         }
         return false;
       })(${JSON.stringify(actionLabels)})
     `);
+    console.log('[DEBUG] Button clicked:', btnClicked);
 
     if (!btnClicked) {
       await page.screenshot({ path: '/tmp/xhs_publish_submit_debug.png' });
@@ -507,7 +588,41 @@ cli({
     }
 
     // ── Step 8: Verify success ─────────────────────────────────────────────────
-    await page.wait({ time: 4 });
+    await page.wait({ time: 2 });
+    
+    // Check if there are any toast/popup messages
+    const pageAfterClick = await page.evaluate(`
+      () => {
+        const results = {
+          url: location.href,
+          toasts: [],
+          visibleTexts: []
+        };
+        
+        // Check for toast/notification messages
+        document.querySelectorAll('[class*="toast"], [class*="message"], [class*="notification"], [role="alert"]').forEach(el => {
+          if (el.offsetParent !== null) {
+            const text = (el.innerText || '').trim();
+            if (text) results.toasts.push(text.slice(0, 100));
+          }
+        });
+        
+        // Check for any visible text that might indicate success/failure
+        const bodyText = document.body.innerText || '';
+        const keywords = ['发布成功', '发布失败', '草稿已保存', '暂存成功', '上传成功', '请填写', '必填', '错误', 'error'];
+        for (const kw of keywords) {
+          if (bodyText.toLowerCase().includes(kw.toLowerCase())) {
+            // Find the element containing this keyword
+            results.visibleTexts.push(kw);
+          }
+        }
+        
+        return results;
+      }
+    `);
+    console.log('[DEBUG] After click:', JSON.stringify(pageAfterClick, null, 2));
+    
+    await page.wait({ time: 2 });
 
     const finalUrl: string = await page.evaluate('() => location.href');
     const successMsg: string = await page.evaluate(`
