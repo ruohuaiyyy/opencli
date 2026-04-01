@@ -357,6 +357,7 @@ cli({
     { name: 'images', required: true, help: '图片路径，逗号分隔，最多9张 (jpg/png/gif/webp)' },
     { name: 'topics', required: false, help: '话题标签，逗号分隔，不含 # 号' },
     { name: 'draft', type: 'bool', default: false, help: '保存为草稿，不直接发布' },
+    { name: 'close-after', type: 'number', default: 5, help: '发布后关闭标签页的秒数（-1=不关闭，默认5）' },
   ],
   columns: ['status', 'detail'],
   func: async (page: IPage | null, kwargs) => {
@@ -641,6 +642,17 @@ cli({
     const navigatedAway = !finalUrl.includes('/publish/publish');
     const isSuccess = successMsg.length > 0 || navigatedAway;
     const verb = isDraft ? '暂存成功' : '发布成功';
+
+    // ── Step 9: Close tab after delay ─────────────────────────────────────────
+    const closeAfter = Number(kwargs['close-after'] ?? 5);
+    if (closeAfter >= 0) {
+      await page.wait({ time: closeAfter });
+      try {
+        await page.closeTab();
+      } catch {
+        // Tab may already be closed due to navigation — non-fatal
+      }
+    }
 
     return [
       {

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OpenCLI
 
 > **Make any website, Electron App, or Local Tool your CLI.**  
@@ -389,3 +390,6 @@ See **[TESTING.md](./TESTING.md)** for how to run and write tests.
 ## License
 
 [Apache-2.0](./LICENSE)
+=======
+# Q-opencli
+>>>>>>> 235171753bf4b98cc1d4b93bca7b19cd9c8c931c
