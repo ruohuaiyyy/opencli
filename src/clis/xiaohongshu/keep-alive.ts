@@ -35,8 +35,27 @@ cli({
     const targetUrl = String(kwargs.url ?? DEFAULT_URL);
 
     // ── Step 1: Navigate to target URL ──────────────────────────────────────
-    await page.goto(targetUrl);
-    await page.wait({ time: 3 });
+    // Retry navigation: on fresh Chrome profiles the extension may not be
+    // fully connected yet, causing "Inspected target navigated or closed".
+    let navOk = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await page.goto(targetUrl);
+        await page.wait({ time: 3 });
+        navOk = true;
+        break;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('navigated or closed') && attempt < 3) {
+          await page.wait({ time: 2 });
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (!navOk) {
+      throw new Error('Failed to navigate after 3 attempts');
+    }
 
     // ── Step 2: Verify login state ──────────────────────────────────────────
     const currentUrl: string = await page.evaluate('() => location.href');
@@ -52,8 +71,12 @@ cli({
 
     // ── Step 4: Optional refresh to trigger additional API calls ────────────
     if (duration > 10) {
-      await page.evaluate('() => location.reload()');
-      await page.wait({ time: 3 });
+      try {
+        await page.evaluate('() => location.reload()');
+        await page.wait({ time: 3 });
+      } catch {
+        // Refresh may cause brief CDP disconnect — non-fatal
+      }
     }
 
     // ── Step 5: Close tab after delay ───────────────────────────────────────
