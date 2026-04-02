@@ -116,24 +116,33 @@ function getAnswerScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
-      // Method A: structured extraction via message containers
-      const containers = [
-        '[class*="assistant-message"]',
-        '[class*="bot-message"]',
-        '[class*="answer"]',
-        '[class*="markdown"]',
+      // Method A: structured extraction - directly get AI answer content
+      // 使用精确的 DOM 选择器直接提取 AI 回答
+      const contentEl = document.querySelector(
+        '.agent-chat__list__deepseek .agent-chat__list__content-wrapper:last-child .agent-chat__list__content'
+      );
+
+      if (contentEl) {
+        const text = clean(contentEl.innerText || contentEl.textContent || '');
+        if (text && text.length > 5) return text;
+      }
+
+      // Method B: fallback - try alternative selectors
+      const altSelectors = [
+        '.agent-chat__list__content-wrapper:last-child .agent-chat__list__content',
+        '.agent-dialogue__content .agent-chat__list__content',
+        '[class*="chat__list__content"]:last-child',
       ];
 
-      for (const sel of containers) {
-        const messages = document.querySelectorAll(sel);
-        if (messages.length > 0) {
-          const lastMsg = messages[messages.length - 1];
-          const text = clean(lastMsg.innerText || lastMsg.textContent || '');
+      for (const sel of altSelectors) {
+        const el = document.querySelector(sel);
+        if (el) {
+          const text = clean(el.innerText || el.textContent || '');
           if (text && text.length > 5) return text;
         }
       }
 
-      // Method B: full-page text extraction with noise removal
+      // Method C: last resort - full page extraction with minimal cleanup
       const root = document.body.cloneNode(true);
       [
         '[class*="sidebar"]',
@@ -141,27 +150,13 @@ function getAnswerScript(): string {
         '[class*="input-box"]',
         '[class*="nav"]',
         '[class*="header"]',
+        '[class*="reference"]',
       ].forEach(sel => {
         root.querySelectorAll(sel).forEach(n => n.remove());
       });
       root.querySelectorAll('script, style, noscript').forEach(n => n.remove());
 
-      const text = clean(root.innerText || root.textContent || '')
-        .replace(/新对话/g, '\\n')
-        .replace(/内容由AI生成/g, '\\n');
-
-      const stopLines = new Set([
-        '元宝', '新对话', '内容由AI生成', 'AI创作', '历史对话',
-        '搜索', '深度思考', '联网搜索',
-      ]);
-
-      const lines = text.split('\\n')
-        .map(l => clean(l))
-        .filter(l => l && l.length <= 400 && !stopLines.has(l));
-
-      // Return the tail portion which typically contains the AI answer
-      const tail = lines.slice(-30).join('\\n');
-      return tail || clean(root.innerText || root.textContent || '');
+      return clean(root.innerText || root.textContent || '');
     })()
   `;
 }

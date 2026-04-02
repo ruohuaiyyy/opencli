@@ -68,17 +68,17 @@ function getTranscriptLinesScript(): string {
       ]);
 
       const noisyPatterns = [
-        /^window\\._SSR_DATA/,
-        /^window\\._ROUTER_DATA/,
+        /^window\._SSR_DATA/,
+        /^window\._ROUTER_DATA/,
         /^\{"namedChunks"/,
       ];
 
       const transcriptText = clean(root.innerText || root.textContent || '')
-        .replace(/新对话/g, '\\n')
-        .replace(/内容由AI生成/g, '\\n');
+        .replace(/新对话/g, '\n')
+        .replace(/内容由AI生成/g, '\n');
 
       return clean(transcriptText)
-        .split('\\n')
+        .split('\n')
         .map((line) => clean(line))
         .filter((line) => line
           && line.length <= 400
