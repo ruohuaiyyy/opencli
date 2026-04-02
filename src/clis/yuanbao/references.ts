@@ -254,6 +254,21 @@ export const referencesCommand = cli({
     }
     await page.wait(0.5);
 
+    // Enable internet search to get reference sources
+    await page.evaluate(`
+      (() => {
+        const btn = document.querySelector('.yb-internet-search-btn');
+        if (!btn) return false;
+        const state = btn.getAttribute('dt-internet-search');
+        if (state === 'closeInternetSearch') {
+          btn.click();
+          return true;
+        }
+        return state === 'openInternetSearch';
+      })()
+    `);
+    await page.wait(0.5);
+
     // Send message
     const sendMethod = await page.evaluate(sendScript()) as string;
     if (sendMethod === 'enter') {

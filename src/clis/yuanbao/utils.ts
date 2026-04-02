@@ -641,6 +641,25 @@ export async function waitForYuanbaoResponse(
 }
 
 /**
+ * Enable internet search toggle so that references are included in responses.
+ * Returns true if search was enabled (was off and got toggled, or was already on).
+ */
+export async function enableYuanbaoInternetSearch(page: IPage): Promise<boolean> {
+  return await page.evaluate(`
+    (() => {
+      const btn = document.querySelector('.yb-internet-search-btn');
+      if (!btn) return false;
+      const state = btn.getAttribute('dt-internet-search');
+      if (state === 'closeInternetSearch') {
+        btn.click();
+        return true;
+      }
+      return state === 'openInternetSearch';
+    })()
+  `) as boolean;
+}
+
+/**
  * Start a new conversation.
  */
 export async function startNewYuanbaoChat(page: IPage): Promise<string> {
