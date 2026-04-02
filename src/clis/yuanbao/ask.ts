@@ -1,6 +1,6 @@
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { YUANBAO_DOMAIN, getYuanbaoTranscriptLines, getYuanbaoVisibleTurns, sendYuanbaoMessage, waitForYuanbaoResponse } from './utils.js';
+import { YUANBAO_DOMAIN, enableYuanbaoInternetSearch, getYuanbaoTranscriptLines, getYuanbaoVisibleTurns, sendYuanbaoMessage, waitForYuanbaoResponse } from './utils.js';
 
 export const askCommand = cli({
   site: 'yuanbao',
@@ -14,11 +14,18 @@ export const askCommand = cli({
   args: [
     { name: 'text', required: true, positional: true, help: 'Prompt to send' },
     { name: 'timeout', required: false, help: 'Max seconds to wait (default: 60)', default: '60' },
+    { name: 'search', required: false, help: 'Enable internet search for references (default: true)', default: 'true' },
   ],
   columns: ['Role', 'Text'],
   func: async (page: IPage, kwargs: any) => {
     const text = kwargs.text as string;
     const timeout = parseInt(kwargs.timeout as string, 10) || 60;
+    const enableSearch = (kwargs.search as string) !== 'false';
+
+    if (enableSearch) {
+      await enableYuanbaoInternetSearch(page);
+    }
+
     const beforeTurns = await getYuanbaoVisibleTurns(page);
     const beforeLines = await getYuanbaoTranscriptLines(page);
 
