@@ -32,6 +32,20 @@ function getTranscriptLinesScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
+      // Method 1: Try to get content from .qk-markdown elements (most reliable)
+      const markdownEls = document.querySelectorAll('.qk-markdown');
+      if (markdownEls.length > 0) {
+        const lines = [];
+        markdownEls.forEach((el) => {
+          const text = clean(el.innerText || '');
+          if (text && text.length > 10) {
+            lines.push(text);
+          }
+        });
+        if (lines.length > 0) return lines;
+      }
+
+      // Method 2: Fallback to full page extraction with aggressive noise filtering
       const root = document.body.cloneNode(true);
       const removableSelectors = [
         '[class*="sidebar"]',
@@ -39,6 +53,12 @@ function getTranscriptLinesScript(): string {
         '[class*="input-box"]',
         '[class*="nav"]',
         '[class*="header"]',
+        '[class*="toolbar"]',
+        '[class*="button"]',
+        'button',
+        'img',
+        'svg',
+        '[class*="icon"]',
       ];
 
       for (const selector of removableSelectors) {
@@ -47,25 +67,49 @@ function getTranscriptLinesScript(): string {
 
       root.querySelectorAll('script, style, noscript').forEach((node) => node.remove());
 
-      const stopLines = new Set([
-        '千问',
-        '新对话',
-        '内容由AI生成',
-        'AI创作',
-        '历史对话',
-        '搜索',
-        '深度思考',
-        '联网搜索',
-      ]);
+      const noisePatterns = [
+        /千问/,
+        /UID：/,
+        /客户端下载/,
+        /退出登录/,
+        /服务协议/,
+        /客服中心/,
+        /权益中心/,
+        /我要反馈/,
+        /用户调研/,
+        /深色模式/,
+        /新对话/,
+        /内容由 AI 生成/,
+        /AI 创作/,
+        /历史对话/,
+        /搜索/,
+        /深度思考/,
+        /联网搜索/,
+        /任务助理/,
+        /深度研究/,
+        /代码/,
+        /图像/,
+        /更多/,
+        /录音 PPT/,
+        /音视频/,
+        /文档发现/,
+        /trigger/,
+        /Qwen\\d+-千问/,
+      ];
 
-      const transcriptText = clean(root.innerText || root.textContent || '')
-        .replace(/新对话/g, '\\n')
-        .replace(/内容由AI生成/g, '\\n');
+      const transcriptText = clean(root.innerText || root.textContent || '');
 
       return clean(transcriptText)
         .split('\\n')
         .map((line) => clean(line))
-        .filter((line) => line && line.length <= 400 && !stopLines.has(line));
+        .filter((line) => {
+          if (!line || line.length < 5 || line.length > 400) return false;
+          // Check against noise patterns
+          for (const pattern of noisePatterns) {
+            if (pattern.test(line)) return false;
+          }
+          return true;
+        });
     })()
   `;
 }
@@ -77,7 +121,9 @@ function getStateScript(): string {
   return `
     (() => {
       // Check if logged in by looking for user-specific elements
-      const loginButton = document.querySelector('button:contains("登录")');
+      // Note: :contains() is not a valid CSS selector — use manual text matching instead
+      const allButtons = Array.from(document.querySelectorAll('button'));
+      const loginButton = allButtons.find(btn => (btn.textContent || '').trim() === '登录');
       const userAvatar = document.querySelector('[class*="user"], [class*="avatar"]');
       const isLoggedIn = !loginButton && !!userAvatar;
 
@@ -104,13 +150,12 @@ function fillComposerScript(text: string): string {
         return rect.width > 0 && rect.height > 0;
       };
 
-      // Qwen uses contenteditable div, not textarea
+      // Updated selectors based on current Qwen DOM (April 2026)
       const candidates = [
-        '.chatTextarea-Cc1M0W',
-        '[contenteditable="true"][class*="chat"]',
-        '[contenteditable="true"][class*="input"]',
-        '.inputOutWrap-_hjFu_ [contenteditable]',
-        'div[contenteditable="true"]',
+        '[role="textbox"][data-slate-editor="true"]',
+        '[data-slate-editor="true"]',
+        '.min-h-24px',
+        'div[contenteditable="true"][aria-multiline="true"]',
       ];
 
       let composer = null;
@@ -282,24 +327,114 @@ export async function getQwenTranscriptLines(page: IPage): Promise<string[]> {
 }
 
 /**
- * Send a message to the current chat.
+ * Send a message to the current Qwen chat.
+ *
+ * Strategy: Find the Slate.js editor instance via React fiber, then call
+ * editor.insertText() directly. This is the ONLY reliable way to input text
+ * into Qwen's Slate editor because:
+ *
+ *   - execCommand('insertText') creates DOM nodes but Slate's internal Value
+ *     stays empty (data-slate-length="0"), so the send button stays disabled
+ *   - createTextNode + dispatchEvent produces untrusted events that Slate ignores
+ *   - page.typeText() wraps selectors breaking attribute selectors
+ *   - Only editor.insertText() updates Slate's internal model → onChange fires
+ *     → React re-renders → send button enables → click actually sends
  */
 export async function sendQwenMessage(page: IPage, text: string): Promise<string> {
   await ensureQwenChatPage(page);
-  await page.evaluate(fillComposerScript(text));
+  await page.wait(1);
+
+  const result = await page.evaluate(`
+    (function(inputText) {
+      var isVisible = function(el) {
+        if (!(el instanceof HTMLElement)) return false;
+        var s = window.getComputedStyle(el);
+        return s.display !== 'none' && s.visibility !== 'hidden'
+          && el.getBoundingClientRect().width > 0;
+      };
+
+      // Find the Slate editor DOM element
+      var composer = null;
+      var candidates = [
+        '[role="textbox"][data-slate-editor="true"]',
+        '[data-slate-editor="true"]',
+        '.min-h-24px',
+        'div[contenteditable="true"][aria-multiline="true"]',
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var node = document.querySelector(candidates[i]);
+        if (node && isVisible(node)) { composer = node; break; }
+      }
+      if (!composer) return { ok: false, error: 'No composer found' };
+
+      // Walk React fiber tree to find the Slate editor instance
+      var fiberKey = Object.keys(composer).find(function(k) { return k.indexOf('__reactFiber') === 0; });
+      if (!fiberKey) return { ok: false, error: 'No React fiber found' };
+
+      var fiber = composer[fiberKey];
+      var editor = null;
+      for (var depth = 0; depth < 20 && fiber; depth++) {
+        if (fiber.memoizedProps && fiber.memoizedProps.editor) {
+          editor = fiber.memoizedProps.editor;
+          break;
+        }
+        fiber = fiber.return;
+      }
+      if (!editor) return { ok: false, error: 'No Slate editor instance found' };
+
+      // Focus + insert text via Slate API
+      composer.focus();
+      editor.insertText(inputText);
+
+      // Return info about button state for debugging
+      var sendBtn = document.querySelector('.operateBtn-ehxNOr');
+      return {
+        ok: true,
+        method: 'slate-insert',
+        finalText: composer.textContent,
+        btnExists: !!sendBtn,
+        btnClass: sendBtn ? sendBtn.className : null,
+        btnVisible: sendBtn ? isVisible(sendBtn) : null
+      };
+    })(${JSON.stringify(text)})
+  `);
+
+  // Wait for React to reconcile — button transitions from disabled→enabled
+  await page.wait(1);
+
+  // Click using Playwright's native click (dispatches real mousedown/mouseup/click
+  // events through the browser's event system, which React's event delegation picks up)
+  try {
+    await page.click('.operateBtn-ehxNOr');
+    console.error(`📍 Message sent via: page.click(send-button)`);
+    await page.wait(1);
+    return 'send-button-click';
+  } catch (clickErr: unknown) {
+    const errMsg = clickErr instanceof Error ? clickErr.message : String(clickErr);
+    console.error(`📍 page.click failed: ${errMsg}`);
+  }
+
+  // Fallback: press Enter on the focused editor
   await page.pressKey('Enter');
-  await page.wait(0.8);
-  return 'enter';
+  console.error(`📍 Message sent via: pressKey(Enter)`);
+  await page.wait(1);
+  return 'enter-key';
 }
 
 /**
  * Wait for AI response to complete.
+ *
+ * IMPORTANT: Uses querySelectorAll + last .qk-markdown element (not first),
+ * because the page may contain .qk-markdown from previous conversations.
+ * Skips content that matches beforeAnswer (snapshot taken before sending),
+ * following the same pattern as Yuanbao's references command.
  */
 export async function waitForQwenResponse(
   page: IPage,
   beforeLines: string[],
   promptText: string,
   timeoutSeconds: number,
+  beforeAnswer?: string,
 ): Promise<string> {
   const beforeSet = new Set(beforeLines);
 
@@ -309,11 +444,21 @@ export async function waitForQwenResponse(
     .trim();
 
   const getCandidate = async (): Promise<string> => {
-    // Method A: structured extraction - get latest AI response
-    const markdownEl = document.querySelector('.qk-markdown') as HTMLElement | null;
-    if (markdownEl) {
-      const text = sanitizeCandidate(markdownEl.innerText || '');
-      if (text && text.length > 10) return text;
+    // Method A: structured extraction — get the LAST (most recent) .qk-markdown element.
+    // querySelector would return the FIRST match which could be from a previous conversation.
+    const markdownText = await page.evaluate(`
+      (() => {
+        const markdownEls = document.querySelectorAll('.qk-markdown');
+        if (markdownEls.length > 0) {
+          const latest = markdownEls[markdownEls.length - 1];
+          return (latest.innerText || '').trim();
+        }
+        return '';
+      })()
+    `) as string;
+
+    if (markdownText && markdownText.length > 10) {
+      return sanitizeCandidate(markdownText);
     }
 
     // Method B: fallback to transcript lines
@@ -322,7 +467,7 @@ export async function waitForQwenResponse(
       .filter((line) => !beforeSet.has(line))
       .map((line) => sanitizeCandidate(line))
       .filter((line) => line && line !== promptText);
-    
+
     const shortCandidate = additions.find((line) => line.length <= 120);
     return shortCandidate || additions[additions.length - 1] || '';
   };
@@ -337,7 +482,11 @@ export async function waitForQwenResponse(
     await page.wait(i === 0 ? 1.5 : pollInterval);
     const current = await getCandidate();
 
+    // Skip empty content
     if (!current) continue;
+
+    // Skip content that existed BEFORE we sent the message (previous conversation's answer)
+    if (beforeAnswer && current === beforeAnswer) continue;
 
     // Check if AI is still streaming
     const isStreaming = await page.evaluate(isStreamingScript()) as boolean;

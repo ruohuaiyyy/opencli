@@ -1,8 +1,7 @@
 /**
  * Standalone command: ask Qwen and return answer + reference sources as JSON.
  *
- * Fully independent — implements its own: page navigation, input injection, send,
- * response polling, and reference card extraction.
+ * Uses shared utilities from utils.ts for consistent behavior.
  *
  * Usage:
  *   opencli qwen references "大同旅游景点推荐" -f json
@@ -10,147 +9,11 @@
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractQwenReferences } from './extract-references.js';
+import { extractNewQwenReferences, snapshotExistingRefUrls, type QwenReference } from './extract-references.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-
-const QWEN_CHAT_URL = 'https://www.qianwen.com/chat';
-
-/** Inject text into Qwen chat input (contenteditable div). */
-function fillInputScript(text: string): string {
-  return `
-    ((inputText) => {
-      const isVisible = (el) => {
-        if (!(el instanceof HTMLElement)) return false;
-        const style = window.getComputedStyle(el);
-        return style.display !== 'none' && style.visibility !== 'hidden'
-          && el.getBoundingClientRect().width > 0;
-      };
-
-      const candidates = [
-        '.chatTextarea-Cc1M0W',
-        '[contenteditable="true"][class*="chat"]',
-        '[contenteditable="true"][class*="input"]',
-        'div[contenteditable="true"]',
-      ];
-
-      let input = null;
-      for (const sel of candidates) {
-        const node = document.querySelector(sel);
-        if (node && isVisible(node)) { input = node; break; }
-      }
-      if (!input) return { ok: false, error: 'No input found' };
-
-      input.focus();
-      input.textContent = '';
-      
-      // Use execCommand for contenteditable
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(input);
-      range.collapse(false);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-      document.execCommand('insertText', false, inputText);
-      
-      return { ok: true };
-    })(${JSON.stringify(text)})
-  `;
-}
-
-/** Send message - Qwen uses Enter key */
-function sendScript(): string {
-  return 'enter';
-}
-
-/** Extract the latest AI answer text from the page. */
-function getAnswerScript(): string {
-  return `
-    (() => {
-      const clean = (v) => (v || '')
-        .replace(/\\u00a0/g, ' ')
-        .replace(/\\n{3,}/g, '\\n\\n')
-        .trim();
-
-      // Method A: structured extraction via qk-markdown class
-      const markdownEl = document.querySelector('.qk-markdown');
-      if (markdownEl) {
-        const text = clean(markdownEl.innerText || markdownEl.textContent || '');
-        if (text && text.length > 5) return text;
-      }
-
-      // Method B: container wrapper approach
-      const containerEl = document.querySelector('.containerWrap-x0TwX5, .content-MqQgCb');
-      if (containerEl) {
-        const text = clean(containerEl.innerText || containerEl.textContent || '');
-        if (text && text.length > 5) return text;
-      }
-
-      // Method C: full-page text extraction with noise removal
-      const root = document.body.cloneNode(true);
-      [
-        '[class*="sidebar"]',
-        '[class*="chat-input"]',
-        '[class*="input-box"]',
-        '[class*="nav"]',
-        '[class*="header"]',
-        '[class*="reference"]',
-      ].forEach(sel => {
-        root.querySelectorAll(sel).forEach(n => n.remove());
-      });
-      root.querySelectorAll('script, style, noscript').forEach(n => n.remove());
-
-      return clean(root.innerText || root.textContent || '');
-    })()
-  `;
-}
-
-/** Check if AI is still generating. */
-function isStreamingScript(): string {
-  return `
-    (() => {
-      const indicators = document.querySelectorAll(
-        '[class*="loading"]',
-        '[class*="typing"]',
-        '[class*="streaming"]',
-        '[class*="thinking"]',
-        '[class*="generating"]',
-      );
-      if (indicators.length > 0) return true;
-
-      const allText = document.body.innerText || '';
-      if (allText.includes('思考中') || allText.includes('生成中') || allText.includes('正在处理')) {
-        return true;
-      }
-
-      return false;
-    })()
-  `;
-}
-
-/** Ensure we are on a Qwen chat page. */
-async function ensureChatPage(page: IPage): Promise<void> {
-  const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
-  if (typeof currentUrl === 'string' && currentUrl.includes('qianwen.com/chat')) {
-    return;
-  }
-
-  // Try to switch to an existing qianwen.com/chat tab
-  const rawTabs = await page.tabs().catch(() => []) as any[];
-  if (Array.isArray(rawTabs) && rawTabs.length > 0) {
-    const qwenTabs = rawTabs.filter((t) =>
-      typeof t?.url === 'string' && t.url.includes('qianwen.com/chat')
-    );
-    if (qwenTabs.length > 0) {
-      await page.selectTab(qwenTabs[0].index);
-      await page.wait(0.8);
-      return;
-    }
-  }
-
-  await page.goto(QWEN_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
-}
+import { getQwenTranscriptLines, sendQwenMessage, waitForQwenResponse } from './utils.js';
 
 export const referencesCommand = cli({
   site: 'qwen',
@@ -169,71 +32,95 @@ export const referencesCommand = cli({
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
     const question = kwargs.text as string;
-    const timeout = parseInt(kwargs.timeout as string, 10) || 300;
+    const timeout = parseInt(kwargs.timeout as string, 10) || 60;
 
-    await ensureChatPage(page);
-    await page.wait(1);
+    console.error('📍 Step 1: Getting transcript lines before sending...');
+    const beforeLines = await getQwenTranscriptLines(page);
+    console.error(`📍 Found ${beforeLines.length} lines before sending`);
 
-    // Snapshot answer before sending
-    const answerBefore = await page.evaluate(getAnswerScript()) as string;
+    // Snapshot existing answer text so we don't pick up a previous conversation's response.
+    // Qwen's page can have multiple .qk-markdown elements from history;
+    // without this snapshot, waitForQwenResponse may return stale content.
+    const beforeAnswer = await page.evaluate(`
+      (() => {
+        const els = document.querySelectorAll('.qk-markdown');
+        return els.length > 0 ? (els[els.length - 1].innerText || '').trim() : '';
+      })()
+    `) as string;
+    console.error(`📍 Snapshotted beforeAnswer (${beforeAnswer.length} chars)`);
 
-    // Inject question into input
-    const fillResult = await page.evaluate(fillInputScript(question)) as { ok: boolean; error?: string };
-    if (!fillResult?.ok) {
-      return [{
-        question,
-        answer: '',
-        references: [],
-        error: fillResult?.error || 'Failed to inject question',
-      }];
-    }
-    await page.wait(0.5);
+    // Snapshot existing reference URLs so we can filter out stale ones later.
+    // The side panel is shared across all conversations.
+    const beforeRefUrls = await snapshotExistingRefUrls(page);
+    console.error(`📍 Snapshotted ${beforeRefUrls.length} existing ref URLs`);
 
-    // Send message (Qwen uses Enter key)
-    await page.pressKey('Enter');
-    await page.wait(1);
-
-    // Poll for response completion
-    const pollInterval = 2;
-    const maxPolls = Math.max(1, Math.ceil(timeout / pollInterval));
-    let answer = '';
-    let stableCount = 0;
-    let streamingDetected = false;
-
-    for (let i = 0; i < maxPolls; i++) {
-      await page.wait(i === 0 ? 1.5 : pollInterval);
-      const current = await page.evaluate(getAnswerScript()) as string;
-
-      if (!current || current === answerBefore) continue;
-
-      // Check if AI is still streaming/generating
-      const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
-      if (isStreaming) {
-        streamingDetected = true;
-        answer = current;
-        stableCount = 0;
-        continue;
-      }
-
-      if (current === answer) {
-        stableCount += 1;
-      } else {
-        answer = current;
-        stableCount = 1;
-      }
-
-      const requiredStable = streamingDetected ? 4 : 2;
-      if (stableCount >= requiredStable) break;
-    }
-
-    // Extract reference sources
-    // Qwen shows references automatically (no internet search toggle needed)
+    console.error('📍 Step 2: Sending message...');
+    const sendMethod = await sendQwenMessage(page, question);
+    console.error(`📍 Message sent via: ${sendMethod}`);
     await page.wait(2);
-    const references = await extractQwenReferences(page);
+
+    // Debug: Check what's on the page after sending
+    const debugAfterSend = await page.evaluate(`
+      (() => {
+        const textbox = document.querySelector('[role="textbox"]');
+        const markdownEls = document.querySelectorAll('.qk-markdown');
+        return {
+          textboxContent: textbox?.textContent?.substring(0, 50) || 'empty',
+          markdownCount: markdownEls.length,
+          hasSendBtn: !!document.querySelector('.operateBtn-ehxNOr'),
+        };
+      })()
+    `) as any;
+    console.error('📍 Page state after send:', debugAfterSend);
+
+    console.error(`📍 Step 3: Waiting for response (timeout: ${timeout}s)...`);
+    const answer = await waitForQwenResponse(page, beforeLines, question, timeout, beforeAnswer);
+    console.error(`📍 Answer received: ${answer ? answer.substring(0, 100) + '...' : 'NONE'}`);
+
+    console.error('📍 Step 4: Expanding reference panel...');
+    // CRITICAL: Each answerItem has its own .reference-wrap > .link-title-igf0OC toggle.
+    // page.click('.link-title-igf0OC') would click the FIRST match (a PREVIOUS answer's toggle),
+    // which would CLOSE an already-open panel instead of opening the current answer's refs.
+    // Solution: scope the selector to the LAST (most recent) answerItem.
+    try {
+      await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
+      console.error('📍 Clicked latest answer\'s reference toggle');
+    } catch (_clickErr) {
+      console.error('📍 Latest toggle not found, trying any visible toggle...');
+      // Fallback: try clicking any toggle (for single-conversation or new-chat scenario)
+      try {
+        await page.click('.link-title-igf0OC');
+        console.error('📍 Clicked fallback toggle button');
+      } catch (_e) {
+        console.error('📍 No reference toggle found (refs may auto-load or question has no search results)');
+      }
+    }
+
+    // Small pause after click to let the side panel populate
+    await page.wait(1);
+
+    // Poll for NEW source items (excluding ones that existed before we sent).
+    // Qwen loads references into the shared side panel AFTER the answer completes,
+    // and the toggle may need time to fetch/render data.
+    let references: QwenReference[] = [];
+    for (let attempt = 0; attempt < 10; attempt++) {
+      await page.wait(2);
+      references = await extractNewQwenReferences(page, beforeRefUrls);
+      if (references.length > 0) break;
+
+      // If still no refs after 6s, try clicking again (panel may have been in wrong state)
+      if (attempt === 3 && references.length === 0) {
+        try {
+          await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
+          console.error('📍 Re-attempted toggle click (attempt 2)');
+        } catch { /* ignore */ }
+      }
+    }
+    console.error(`📍 Found ${references.length} NEW references (filtered out ${beforeRefUrls.length} stale, polled ${Math.min(10, 10) * 2}s max)`);
 
     const result = [{
       question,
-      answer: answer || 'No response received within timeout.',
+      answer: answer || `No response received within ${timeout}s.`,
       references,
     }];
 
