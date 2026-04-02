@@ -406,17 +406,14 @@ export async function sendQwenMessage(page: IPage, text: string): Promise<string
   // events through the browser's event system, which React's event delegation picks up)
   try {
     await page.click('.operateBtn-ehxNOr');
-    console.error(`📍 Message sent via: page.click(send-button)`);
     await page.wait(1);
     return 'send-button-click';
-  } catch (clickErr: unknown) {
-    const errMsg = clickErr instanceof Error ? clickErr.message : String(clickErr);
-    console.error(`📍 page.click failed: ${errMsg}`);
+  } catch (_clickErr) {
+    // fallback to Enter key
   }
 
   // Fallback: press Enter on the focused editor
   await page.pressKey('Enter');
-  console.error(`📍 Message sent via: pressKey(Enter)`);
   await page.wait(1);
   return 'enter-key';
 }

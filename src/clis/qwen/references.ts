@@ -34,95 +34,56 @@ export const referencesCommand = cli({
     const question = kwargs.text as string;
     const timeout = parseInt(kwargs.timeout as string, 10) || 60;
 
-    console.error('📍 Step 1: Getting transcript lines before sending...');
+    // Snapshot state BEFORE sending so we can distinguish new vs stale data later.
+    // Qwen's page retains previous conversations, so without snapshots we'd
+    // pick up old answers and old reference URLs.
     const beforeLines = await getQwenTranscriptLines(page);
-    console.error(`📍 Found ${beforeLines.length} lines before sending`);
-
-    // Snapshot existing answer text so we don't pick up a previous conversation's response.
-    // Qwen's page can have multiple .qk-markdown elements from history;
-    // without this snapshot, waitForQwenResponse may return stale content.
     const beforeAnswer = await page.evaluate(`
       (() => {
         const els = document.querySelectorAll('.qk-markdown');
         return els.length > 0 ? (els[els.length - 1].innerText || '').trim() : '';
       })()
     `) as string;
-    console.error(`📍 Snapshotted beforeAnswer (${beforeAnswer.length} chars)`);
-
-    // Snapshot existing reference URLs so we can filter out stale ones later.
-    // The side panel is shared across all conversations.
     const beforeRefUrls = await snapshotExistingRefUrls(page);
-    console.error(`📍 Snapshotted ${beforeRefUrls.length} existing ref URLs`);
 
-    console.error('📍 Step 2: Sending message...');
+    // Send message
     const sendMethod = await sendQwenMessage(page, question);
-    console.error(`📍 Message sent via: ${sendMethod}`);
     await page.wait(2);
 
-    // Debug: Check what's on the page after sending
-    const debugAfterSend = await page.evaluate(`
-      (() => {
-        const textbox = document.querySelector('[role="textbox"]');
-        const markdownEls = document.querySelectorAll('.qk-markdown');
-        return {
-          textboxContent: textbox?.textContent?.substring(0, 50) || 'empty',
-          markdownCount: markdownEls.length,
-          hasSendBtn: !!document.querySelector('.operateBtn-ehxNOr'),
-        };
-      })()
-    `) as any;
-    console.error('📍 Page state after send:', debugAfterSend);
-
-    console.error(`📍 Step 3: Waiting for response (timeout: ${timeout}s)...`);
+    // Wait for answer completion (skips content matching beforeAnswer)
     const answer = await waitForQwenResponse(page, beforeLines, question, timeout, beforeAnswer);
-    console.error(`📍 Answer received: ${answer ? answer.substring(0, 100) + '...' : 'NONE'}`);
 
-    console.error('📍 Step 4: Expanding reference panel...');
-    // CRITICAL: Each answerItem has its own .reference-wrap > .link-title-igf0OC toggle.
-    // page.click('.link-title-igf0OC') would click the FIRST match (a PREVIOUS answer's toggle),
-    // which would CLOSE an already-open panel instead of opening the current answer's refs.
-    // Solution: scope the selector to the LAST (most recent) answerItem.
-    try {
-      await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
-      console.error('📍 Clicked latest answer\'s reference toggle');
-    } catch (_clickErr) {
-      console.error('📍 Latest toggle not found, trying any visible toggle...');
-      // Fallback: try clicking any toggle (for single-conversation or new-chat scenario)
-      try {
-        await page.click('.link-title-igf0OC');
-        console.error('📍 Clicked fallback toggle button');
-      } catch (_e) {
-        console.error('📍 No reference toggle found (refs may auto-load or question has no search results)');
-      }
+    if (!answer) {
+      return [{ question, answer: `No response received within ${timeout}s.`, references: [] }];
     }
 
-    // Small pause after click to let the side panel populate
+    // Expand reference panel for the LATEST answer (not a previous one).
+    // Each .answerItem has its own toggle; clicking a previous one would close it.
+    try {
+      await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
+    } catch (_clickErr) {
+      try {
+        await page.click('.link-title-igf0OC');
+      } catch { /* no toggle found */ }
+    }
     await page.wait(1);
 
     // Poll for NEW source items (excluding ones that existed before we sent).
-    // Qwen loads references into the shared side panel AFTER the answer completes,
-    // and the toggle may need time to fetch/render data.
     let references: QwenReference[] = [];
     for (let attempt = 0; attempt < 10; attempt++) {
       await page.wait(2);
       references = await extractNewQwenReferences(page, beforeRefUrls);
       if (references.length > 0) break;
 
-      // If still no refs after 6s, try clicking again (panel may have been in wrong state)
+      // Re-attempt toggle click once if still empty after ~6s
       if (attempt === 3 && references.length === 0) {
         try {
           await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
-          console.error('📍 Re-attempted toggle click (attempt 2)');
         } catch { /* ignore */ }
       }
     }
-    console.error(`📍 Found ${references.length} NEW references (filtered out ${beforeRefUrls.length} stale, polled ${Math.min(10, 10) * 2}s max)`);
 
-    const result = [{
-      question,
-      answer: answer || `No response received within ${timeout}s.`,
-      references,
-    }];
+    const result = [{ question, answer, references }];
 
     // Save to file
     const outPath = kwargs.output as string | undefined;
@@ -136,7 +97,6 @@ export const referencesCommand = cli({
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const filePath = outPath ? join(saveDir, outPath) : join(saveDir, `qwen-${timestamp}.json`);
     writeFileSync(filePath, JSON.stringify(result, null, 2), 'utf-8');
-    console.error(`💾 Saved to ${filePath}`);
 
     return result;
   },

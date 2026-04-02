@@ -99,12 +99,12 @@ function extractNewReferencesScript(): string {
         const indexEl = item.querySelector('.index-Wqr8au');
         const rawIndex = indexEl ? (indexEl.textContent || '').trim() : '';
 
-        // Snippet: full text minus title and source
+        // Snippet: full text minus title and source — keep the rest as-is.
         const fullText = (item.textContent || '').trim();
         let snippet = fullText;
         if (title) snippet = snippet.replace(title, '').trim();
         if (source) snippet = snippet.replace(source, '').trim();
-        snippet = snippet.replace(/^\\d+/, '').trim().substring(0, 500);
+        snippet = snippet.substring(0, 500);
 
         if (title || source || url) {
           refs.push({
