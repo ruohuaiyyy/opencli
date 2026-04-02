@@ -12,6 +12,9 @@
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
 import { extractDoubaoReferences } from './extract-references.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 const DOUBAO_CHAT_URL = 'https://www.doubao.com/chat';
 
@@ -221,6 +224,7 @@ export const referencesCommand = cli({
   args: [
     { name: 'text', required: true, positional: true, help: 'Question to ask Doubao' },
     { name: 'timeout', required: false, help: 'Max seconds to wait (default: 300)', default: '300' },
+    { name: 'output', required: false, help: 'Save result to file (e.g. my-trip.json)' },
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
@@ -308,10 +312,27 @@ export const referencesCommand = cli({
     // Extract reference sources
     const references = await extractDoubaoReferences(page);
 
-    return [{
+    const result = [{
       question,
       answer: answer || 'No response received within timeout.',
       references,
     }];
+
+    // Save to file
+    const outPath = kwargs.output as string | undefined;
+    const homeDir = homedir();
+    // homedir() may return '~' in some environments; fallback to env var
+    const resolvedHome = homeDir === '~'
+      ? (process.env.USERPROFILE || process.env.HOME || process.cwd())
+      : homeDir;
+    const saveDir = outPath ? process.cwd() : join(resolvedHome, '.opencli', 'doubao_output');
+    mkdirSync(saveDir, { recursive: true });
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const filePath = outPath ? join(saveDir, outPath) : join(saveDir, `doubao-${timestamp}.json`);
+    writeFileSync(filePath, JSON.stringify(result, null, 2), 'utf-8');
+    console.error(`💾 Saved to ${filePath}`);
+
+    return result;
   },
 });
