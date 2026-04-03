@@ -206,6 +206,18 @@ function isStreamingScript(): string {
   `;
 }
 
+/** Get the full page text excluding sidebar and input area. Used for completion detection. */
+function getPageContentLengthScript(): string {
+  return `
+    (() => {
+      const root = document.body.cloneNode(true);
+      root.querySelectorAll('[class*="sidebar"], [class*="nav"]').forEach(n => n.remove());
+      root.querySelectorAll('script, style, noscript').forEach(n => n.remove());
+      return (root.innerText || root.textContent || '').length;
+    })()
+  `;
+}
+
 /** Check if the "Stop" button is present in the input area. */
 function hasStopButtonScript(): string {
   return `
@@ -273,66 +285,49 @@ export const referencesCommand = cli({
     }
     await page.wait(1);
 
-    // Poll for response completion using combined strategy:
-    // 1. Primary: Track "Stop" button appearance → disappearance
-    // 2. Fallback: Content stability detection
+    // Poll for response completion using content length growth detection.
+    // After sending, the total page content length increases as AI streams.
+    // When length stops growing for N consecutive checks → AI is done.
     const pollInterval = 2;
     const maxPolls = Math.max(1, Math.ceil(timeout / pollInterval));
     let answer = '';
     let stableCount = 0;
-    let streamingDetected = false;
     let previousLength = 0;
-    let stopButtonWasSeen = false;
+    let contentStartedGrowing = false;
+
+    // Get baseline page content length
+    const baselineLength = await page.evaluate(getPageContentLengthScript()) as number;
 
     for (let i = 0; i < maxPolls; i++) {
       await page.wait(i === 0 ? 1.5 : pollInterval);
-      const current = await page.evaluate(getAnswerScript()) as string;
 
-      // Primary check: "Stop" button state transition
-      const hasStop = await page.evaluate(hasStopButtonScript()) as boolean;
+      // Get current page content length
+      const currentLength = await page.evaluate(getPageContentLengthScript()) as number;
 
-      if (hasStop) {
-        // AI is streaming — record that we saw it
-        stopButtonWasSeen = true;
-        streamingDetected = true;
-        answer = current || answer;
-        previousLength = (current || '').length;
+      // Check if content has started growing (AI is responding)
+      if (currentLength > baselineLength + 100) {
+        contentStartedGrowing = true;
+      }
+
+      if (!contentStartedGrowing) continue;
+
+      if (currentLength > previousLength) {
+        // Content is still growing — AI is streaming
+        previousLength = currentLength;
         stableCount = 0;
         continue;
       }
 
-      if (stopButtonWasSeen && !hasStop) {
-        // Stop button disappeared — AI finished! Wait for final render
-        await page.wait(2);
+      // Content length didn't change — check stability
+      stableCount += 1;
+
+      // Require 5 consecutive stable checks (10 seconds) before declaring done
+      if (stableCount >= 5) {
+        // Final answer extraction
         answer = await page.evaluate(getAnswerScript()) as string;
+        await page.wait(1);
         break;
       }
-
-      // Fallback: content-based detection
-      if (!current || current === answerBefore) continue;
-
-      const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
-      if (isStreaming) {
-        streamingDetected = true;
-        answer = current;
-        previousLength = current.length;
-        stableCount = 0;
-        continue;
-      }
-
-      if (current === answer) {
-        stableCount += 1;
-      } else if (current.length > previousLength) {
-        answer = current;
-        previousLength = current.length;
-        stableCount = 0;
-      } else {
-        answer = current;
-        stableCount = 1;
-      }
-
-      const requiredStable = streamingDetected ? 6 : 3;
-      if (stableCount >= requiredStable) break;
     }
 
     // Extract references (no click needed — DeepSeek embeds references inline in the response)
