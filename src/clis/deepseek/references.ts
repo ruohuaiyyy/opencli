@@ -115,39 +115,72 @@ function getAnswerScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
-      // Method A: structured extraction - get AI response paragraphs
-      // DeepSeek places AI responses in containers with paragraphs
-      const paragraphs = document.querySelectorAll('p, [class*="markdown"], [class*="message-content"]');
-      if (paragraphs.length > 0) {
-        const texts = Array.from(paragraphs)
-          .map(p => clean(p.innerText || p.textContent || ''))
-          .filter(t => t && t.length > 5);
-        if (texts.length > 0) return clean(texts.join('\\n'));
+      // Find the LAST "N个网页" or "已阅读 N 个网页" element (most recent AI response)
+      const refButtons = Array.from(document.querySelectorAll('*')).filter(el => {
+        const text = (el.textContent || '').trim();
+        return text.match(/^\\d+\\s*个网页$/) || text.includes('已阅读');
+      });
+
+      if (refButtons.length > 0) {
+        const lastRefBtn = refButtons[refButtons.length - 1];
+
+        // DOM structure (confirmed via Playwright):
+        //   p3 (DIV, response wrapper)
+        //     └─ p2 (DIV, AI response area, 3 children)
+        //         ├─ [0]: user message header
+        //         ├─ [1]: AI response content (paragraphs, headings, tables, lists)
+        //         └─ [2]: p1 (ref button container with "N个网页")
+        const p1 = lastRefBtn.parentElement;
+        const p2 = p1 ? p1.parentElement : null;
+
+        if (p2 && p2.children.length >= 2) {
+          const texts = [];
+          // Extract from all children EXCEPT the last one (ref button container)
+          for (let i = 0; i < p2.children.length - 1; i++) {
+            const child = p2.children[i];
+            const contentEls = child.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, blockquote, strong, td');
+            contentEls.forEach(el => {
+              const text = clean(el.innerText || el.textContent || '');
+              if (text && text.length > 2) {
+                // Skip UI noise
+                if (text.includes('开启新对话') || text.includes('内容由 AI 生成') ||
+                    text.includes('深度思考') || text.includes('智能搜索') ||
+                    text.includes('193******')) return;
+                // Skip reference number patterns like "- 10"
+                if (/^[-\\s]*\\d+\\s*$/.test(text)) return;
+                texts.push(text);
+              }
+            });
+          }
+
+          if (texts.length > 0) {
+            return clean(texts.join('\\n'));
+          }
+        }
       }
 
-      // Method B: full page extraction with minimal cleanup
+      // Fallback: full body with sidebar removal
       const root = document.body.cloneNode(true);
-      [
-        '[class*="sidebar"]',
-        '[class*="chat-input"]',
-        '[class*="input-box"]',
-        '[class*="nav"]',
-        '[class*="header"]',
-        '[class*="搜索结果"]',
-      ].forEach(sel => {
-        root.querySelectorAll(sel).forEach(n => n.remove());
-      });
+      root.querySelectorAll('[class*="sidebar"]').forEach(n => n.remove());
       root.querySelectorAll('script, style, noscript').forEach(n => n.remove());
-
       return clean(root.innerText || root.textContent || '');
     })()
   `;
 }
 
-/** Check if AI is still generating (streaming indicator). */
+/** Check if the "Stop" button is present (AI is still streaming). */
 function isStreamingScript(): string {
   return `
     (() => {
+      // Strategy 1: Check for "Stop" / "停止" button (appears during streaming)
+      const buttons = Array.from(document.querySelectorAll('button'));
+      const hasStopButton = buttons.some(b => {
+        const text = (b.textContent || '').trim();
+        return text.includes('停止') || text.includes('Stop');
+      });
+      if (hasStopButton) return true;
+
+      // Strategy 2: Check for streaming CSS indicators
       const indicators = document.querySelectorAll(
         '[class*="loading"]',
         '[class*="typing"]',
@@ -157,15 +190,36 @@ function isStreamingScript(): string {
         '[class*="cursor"]',
         '[class*="blink"]',
         '[class*="pulse"]',
+        '[class*="animate"]',
+        '[class*="wave"]',
       );
       if (indicators.length > 0) return true;
 
+      // Strategy 3: Check for streaming text indicators
       const allText = document.body.innerText || '';
       if (allText.includes('思考中') || allText.includes('搜索中') || allText.includes('正在生成')) {
         return true;
       }
 
       return false;
+    })()
+  `;
+}
+
+/** Check if the "Stop" button is present in the input area. */
+function hasStopButtonScript(): string {
+  return `
+    (() => {
+      const textarea = document.querySelector('textarea[placeholder*="发送消息"], textarea[placeholder*="Message"]');
+      if (!textarea) return false;
+      const container = textarea.closest('[class*="chat-input"], [class*="input-box"]')
+        || textarea.parentElement;
+      if (!container) return false;
+      const btns = container.querySelectorAll('button');
+      return Array.from(btns).some(b => {
+        const text = (b.textContent || '').trim();
+        return text.includes('停止') || text.includes('Stop');
+      });
     })()
   `;
 }
@@ -219,37 +273,65 @@ export const referencesCommand = cli({
     }
     await page.wait(1);
 
-    // Poll for response completion
+    // Poll for response completion using combined strategy:
+    // 1. Primary: Track "Stop" button appearance → disappearance
+    // 2. Fallback: Content stability detection
     const pollInterval = 2;
     const maxPolls = Math.max(1, Math.ceil(timeout / pollInterval));
     let answer = '';
     let stableCount = 0;
     let streamingDetected = false;
+    let previousLength = 0;
+    let stopButtonWasSeen = false;
 
     for (let i = 0; i < maxPolls; i++) {
       await page.wait(i === 0 ? 1.5 : pollInterval);
       const current = await page.evaluate(getAnswerScript()) as string;
 
+      // Primary check: "Stop" button state transition
+      const hasStop = await page.evaluate(hasStopButtonScript()) as boolean;
+
+      if (hasStop) {
+        // AI is streaming — record that we saw it
+        stopButtonWasSeen = true;
+        streamingDetected = true;
+        answer = current || answer;
+        previousLength = (current || '').length;
+        stableCount = 0;
+        continue;
+      }
+
+      if (stopButtonWasSeen && !hasStop) {
+        // Stop button disappeared — AI finished! Wait for final render
+        await page.wait(2);
+        answer = await page.evaluate(getAnswerScript()) as string;
+        break;
+      }
+
+      // Fallback: content-based detection
       if (!current || current === answerBefore) continue;
 
-      // Check if AI is still streaming/generating
       const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
       if (isStreaming) {
         streamingDetected = true;
         answer = current;
+        previousLength = current.length;
         stableCount = 0;
         continue;
       }
 
       if (current === answer) {
         stableCount += 1;
+      } else if (current.length > previousLength) {
+        answer = current;
+        previousLength = current.length;
+        stableCount = 0;
       } else {
         answer = current;
         stableCount = 1;
       }
 
-      // If we detected streaming before, require longer stability (4 checks = 8 seconds)
-      const requiredStable = streamingDetected ? 4 : 2;
+      const requiredStable = streamingDetected ? 6 : 3;
       if (stableCount >= requiredStable) break;
     }
 
