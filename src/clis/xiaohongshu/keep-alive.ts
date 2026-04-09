@@ -7,12 +7,13 @@
  *   opencli xiaohongshu keep-alive                     # 30s keep-alive, close after 5s
  *   opencli xiaohongshu keep-alive --duration 60        # keep alive for 60 seconds
  *   opencli xiaohongshu keep-alive --close-after -1     # keep alive, don't close tab
+ *   opencli xiaohongshu keep-alive --url https://www.xiaohongshu.com  # custom URL
  */
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
 
-const DEFAULT_URL = 'https://creator.xiaohongshu.com';
+const DEFAULT_URL = 'https://creator.xiaohongshu.com/new/home';
 
 cli({
   site: 'xiaohongshu',
