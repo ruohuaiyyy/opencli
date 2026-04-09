@@ -262,6 +262,8 @@ export const referencesCommand = cli({
     let answer = '';
     let stableCount = 0;
     let streamingDetected = false;
+    let prevAnswerLength = 0;
+    let contentGrowing = false;
 
     for (let i = 0; i < maxPolls; i++) {
       await page.wait(i === 0 ? 1.5 : pollInterval);
@@ -269,11 +271,23 @@ export const referencesCommand = cli({
 
       if (!current || current === answerBefore) continue;
 
+      // Detect content growth (text still being appended)
+      if (answer && current.length > prevAnswerLength + 5) {
+        contentGrowing = true;
+        streamingDetected = true;
+        answer = current;
+        prevAnswerLength = current.length;
+        stableCount = 0;
+        continue;
+      }
+      prevAnswerLength = current.length;
+
       // Check if AI is still streaming/generating
       const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
       if (isStreaming) {
         streamingDetected = true;
         answer = current;
+        prevAnswerLength = current.length;
         stableCount = 0;
         continue;
       }
@@ -282,12 +296,21 @@ export const referencesCommand = cli({
         stableCount += 1;
       } else {
         answer = current;
+        prevAnswerLength = current.length;
         stableCount = 1;
       }
 
-      // If we detected streaming before, require longer stability (4 checks = 8 seconds)
-      const requiredStable = streamingDetected ? 4 : 2;
+      // If we detected streaming or growth before, require longer stability (4 checks = 8 seconds)
+      const requiredStable = (streamingDetected || contentGrowing) ? 4 : 2;
       if (stableCount >= requiredStable) break;
+    }
+
+    // Final confirmation wait: one more check to ensure content is truly complete
+    await page.wait(1.5);
+    const finalCheck = await page.evaluate(getAnswerScript()) as string;
+    const finalStreaming = await page.evaluate(isStreamingScript()) as boolean;
+    if (!finalStreaming && finalCheck && finalCheck !== answerBefore) {
+      answer = finalCheck;
     }
 
     // Expand reference sources section (click "参考 N 篇资料" button)
