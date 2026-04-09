@@ -292,7 +292,7 @@ export const referencesCommand = cli({
 
     // Expand reference sources section (click "参考 N 篇资料" button)
     await page.wait(1);
-    await page.evaluate(`
+    const clickResult = await page.evaluate(`
       (() => {
         // Doubao uses a generic element (not <button>) for the reference toggle
         const xpath = document.evaluate(
@@ -302,15 +302,47 @@ export const referencesCommand = cli({
         const refBtn = xpath.singleNodeValue;
         if (refBtn) {
           refBtn.click();
-          return true;
+          return { clicked: true, hasRef: true };
         }
-        return false;
+        // No reference button means the answer has no reference sources
+        return { clicked: false, hasRef: false };
       })()
-    `);
+    `) as { clicked: boolean; hasRef: boolean };
+
+    // If no reference button exists, return empty immediately
+    if (!clickResult.hasRef) {
+      const result = [{
+        question,
+        answer: answer || 'No response received within timeout.',
+        references: [],
+      }];
+      // Save result
+      const outPath = kwargs.output as string | undefined;
+      const homeDir = homedir();
+      const resolvedHome = homeDir === '~'
+        ? (process.env.USERPROFILE || process.env.HOME || process.cwd())
+        : homeDir;
+      const saveDir = outPath ? process.cwd() : join(resolvedHome, '.opencli', 'doubao_output');
+      mkdirSync(saveDir, { recursive: true });
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = outPath ? join(saveDir, outPath) : join(saveDir, `doubao-${timestamp}.json`);
+      writeFileSync(filePath, JSON.stringify(result, null, 2), 'utf-8');
+      console.error(`💾 Saved to ${filePath}`);
+      return result;
+    }
+
+    // Reference button exists - wait for content to load
     await page.wait(1.5);
 
-    // Extract reference sources
-    const references = await extractDoubaoReferences(page);
+    // Poll to ensure reference content is fully loaded (first launch may be slow)
+    let references = await extractDoubaoReferences(page);
+    const maxRetries = 3;
+    let retries = 0;
+    while (references.length === 0 && retries < maxRetries) {
+      await page.wait(1);
+      references = await extractDoubaoReferences(page);
+      retries++;
+    }
 
     const result = [{
       question,
