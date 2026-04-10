@@ -264,12 +264,19 @@ export const referencesCommand = cli({
     let streamingDetected = false;
     let prevAnswerLength = 0;
     let contentGrowing = false;
+    let hasPlaceholderText = false; // Track if we see placeholder like "找到 N 篇资料"
 
     for (let i = 0; i < maxPolls; i++) {
       await page.wait(i === 0 ? 1.5 : pollInterval);
       const current = await page.evaluate(getAnswerScript()) as string;
 
       if (!current || current === answerBefore) continue;
+
+      // Detect placeholder text indicating search is starting but not complete
+      if (current.match(/找到\s*\d+\s*篇资料/)) {
+        hasPlaceholderText = true;
+        streamingDetected = true; // Force longer wait
+      }
 
       // Detect content growth (text still being appended)
       if (answer && current.length > prevAnswerLength + 5) {
@@ -300,9 +307,14 @@ export const referencesCommand = cli({
         stableCount = 1;
       }
 
-      // If we detected streaming or growth before, require longer stability (4 checks = 8 seconds)
-      const requiredStable = (streamingDetected || contentGrowing) ? 4 : 2;
-      if (stableCount >= requiredStable) break;
+      // If we saw placeholder text, require longer stability (6 checks = 12 seconds)
+      if (hasPlaceholderText) {
+        if (stableCount >= 6) break;
+      } else {
+        // Normal case
+        const requiredStable = (streamingDetected || contentGrowing) ? 4 : 2;
+        if (stableCount >= requiredStable) break;
+      }
     }
 
     // Final confirmation wait: one more check to ensure content is truly complete
@@ -355,13 +367,39 @@ export const referencesCommand = cli({
     }
 
     // Reference button exists - wait for content to load
-    await page.wait(1.5);
+    await page.wait(2);
+
+    // Scroll to ensure reference section is in viewport (triggers lazy loading)
+    await page.evaluate(`
+      (() => {
+        const refBtn = document.evaluate(
+          '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
+          document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+        ).singleNodeValue;
+        if (refBtn) {
+          refBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      })()
+    `);
+    await page.wait(1);
 
     // Poll to ensure reference content is fully loaded (first launch may be slow)
     let references = await extractDoubaoReferences(page);
-    const maxRetries = 3;
+    const maxRetries = 5;
     let retries = 0;
     while (references.length === 0 && retries < maxRetries) {
+      await page.wait(1.5);
+      // Re-click the reference button to trigger reload
+      await page.evaluate(`
+        (() => {
+          const xpath = document.evaluate(
+            '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
+            document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+          );
+          const refBtn = xpath.singleNodeValue;
+          if (refBtn) refBtn.click();
+        })()
+      `);
       await page.wait(1);
       references = await extractDoubaoReferences(page);
       retries++;
