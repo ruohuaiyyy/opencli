@@ -146,16 +146,22 @@ function getAnswerScript(): string {
         if (textEl) return clean(textEl.innerText);
       }
 
-      // ===== Method B: 全页文本提取兜底（增强侧边栏移除） =====
+      // Method B: fallback with layered exclusion
       const root = document.body.cloneNode(true);
       [
-        'navigation, nav',                        // 新版语义标签
-        '.left-side-U7A0kz',                      // 新版侧边栏 class
-        '[data-testid="flow_chat_sidebar"]',      // 旧版兼容
+        'nav, aside',
+        '[data-testid*="sidebar"]',
+        '[data-testid*="navigation"]',
+        '[data-testid="flow_chat_sidebar"]',
         '[data-testid="chat_input"]',
         '[data-testid="flow_chat_guidance_page"]',
+        '[class*="sidebar"]',
+        '[class*="left-side"]',
+        '[class*="flow_chat_sidebar"]',
+        '[class*="chat-input"]',
+        '[class*="guidance"]',
       ].forEach(sel => {
-        root.querySelectorAll(sel).forEach(n => n.remove());
+        try { root.querySelectorAll(sel).forEach(n => n.remove()); } catch(e) {}
       });
       root.querySelectorAll('script, style, noscript').forEach(n => n.remove());
 
@@ -166,15 +172,24 @@ function getAnswerScript(): string {
         .replace(/文件数量：[^\\n]*/g, '')
         .replace(/文件类型：[^\\n]*/g, '');
 
-      const stopLines = new Set([
-        '豆包', '新对话', '内容由豆包 AI 生成', 'AI 创作', '云盘', '更多',
-        '历史对话', '手机版对话', '快速', '超能模式', 'Beta',
-        'PPT 生成', '图像生成', '帮我写作',
-      ]);
+      // Filter out remaining UI noise lines using regex patterns
+      const stopPatterns = [
+        /^豆包$/,
+        /^新对话$/,
+        /^历史对话/,
+        /^手机版对话/,
+        /^快速$/,
+        /^超能模式/,
+        /^Beta$/,
+        /^PPT 生成/,
+        /^图像生成/,
+        /^帮我写作/,
+        /^AI 创作$/,
+      ];
 
       const lines = text.split('\\n')
         .map(l => clean(l))
-        .filter(l => l && l.length <= 400 && !stopLines.has(l));
+        .filter(l => l && l.length <= 400 && !stopPatterns.some(p => p.test(l)));
 
       // Return the tail portion which typically contains the AI answer
       const tail = lines.slice(-30).join('\\n');
