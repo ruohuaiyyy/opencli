@@ -225,6 +225,17 @@ function isStreamingScript(): string {
   `;
 }
 
+/** Simple string hash for content stability detection. */
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return hash.toString(16);
+}
+
 /** Ensure we are on a Doubao chat page, navigating or switching tabs if needed. */
 async function ensureChatPage(page: IPage): Promise<void> {
   const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
@@ -268,7 +279,52 @@ export const referencesCommand = cli({
     const timeout = parseInt(kwargs.timeout as string, 10) || 300;
 
     await ensureChatPage(page);
-    await page.wait(1);
+
+    // Wait for chat input to be ready (replaces fixed 1s wait)
+    // Doubao is a React SPA that needs time to hydrate and render components
+    const inputReady = await page.evaluate(`
+      (() => {
+        const selectors = [
+          'textarea[data-testid="chat_input_input"]',
+          '.chat-input textarea',
+          'textarea[placeholder*="发消息"]',
+          'textarea[placeholder*="Message"]',
+          'textarea',
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el && el.offsetHeight > 0) return true;
+        }
+        return false;
+      })()
+    `) as boolean;
+
+    // If input not ready, poll up to 15 seconds
+    if (!inputReady) {
+      const maxWaits = 30; // 30 * 500ms = 15s
+      let ready = false;
+      for (let i = 0; i < maxWaits; i++) {
+        await page.wait(0.5);
+        const check = await page.evaluate(`
+          (() => {
+            const el = document.querySelector('textarea[data-testid="chat_input_input"], textarea[placeholder*="发消息"], textarea');
+            return el && el.offsetHeight > 0;
+          })()
+        `) as boolean;
+        if (check) { ready = true; break; }
+      }
+      if (!ready) {
+        return [{
+          question,
+          answer: '',
+          references: [],
+          error: 'Doubao chat input not ready after 15s. Page may have failed to load.',
+        }];
+      }
+    }
+
+    // Small buffer to ensure React components are fully mounted
+    await page.wait(0.5);
 
     // Snapshot answer before sending
     const answerBefore = await page.evaluate(getAnswerScript()) as string;
@@ -290,9 +346,12 @@ export const referencesCommand = cli({
     if (sendMethod === 'enter') {
       await page.pressKey('Enter');
     }
-    await page.wait(1);
+    await page.wait(10);
 
-    // Poll for response completion
+    // Wait 5 seconds before starting detection to allow initial response generation
+    await page.wait(5);
+
+    // Poll for response completion with dual stability detection
     const pollInterval = 2;
     const maxPolls = Math.max(1, Math.ceil(timeout / pollInterval));
     let answer = '';
@@ -301,9 +360,11 @@ export const referencesCommand = cli({
     let prevAnswerLength = 0;
     let contentGrowing = false;
     let hasPlaceholderText = false; // Track if we see placeholder like "找到 N 篇资料"
+    let prevContentHash = '';
+    let prevNodeCount = 0;
 
     for (let i = 0; i < maxPolls; i++) {
-      await page.wait(i === 0 ? 1.5 : pollInterval);
+      await page.wait(i === 0 ? 0 : pollInterval);
       const current = await page.evaluate(getAnswerScript()) as string;
 
       if (!current || current === answerBefore) continue;
@@ -314,6 +375,15 @@ export const referencesCommand = cli({
         streamingDetected = true; // Force longer wait
       }
 
+      // Compute content hash for stability detection
+      const contentHash = simpleHash(current);
+      const nodeCount = await page.evaluate(`
+        (() => {
+          const container = document.querySelector('.flow-markdown-body') || document.body;
+          return container.querySelectorAll('*').length;
+        })()
+      `) as number;
+
       // Detect content growth (text still being appended)
       if (answer && current.length > prevAnswerLength + 5) {
         contentGrowing = true;
@@ -321,6 +391,8 @@ export const referencesCommand = cli({
         answer = current;
         prevAnswerLength = current.length;
         stableCount = 0;
+        prevContentHash = contentHash;
+        prevNodeCount = nodeCount;
         continue;
       }
       prevAnswerLength = current.length;
@@ -332,16 +404,21 @@ export const referencesCommand = cli({
         answer = current;
         prevAnswerLength = current.length;
         stableCount = 0;
+        prevContentHash = contentHash;
+        prevNodeCount = nodeCount;
         continue;
       }
 
-      if (current === answer) {
+      // Dual stability detection: content hash + DOM node count both stable
+      if (contentHash === prevContentHash && nodeCount === prevNodeCount) {
         stableCount += 1;
       } else {
         answer = current;
         prevAnswerLength = current.length;
         stableCount = 1;
       }
+      prevContentHash = contentHash;
+      prevNodeCount = nodeCount;
 
       // If we saw placeholder text, require longer stability (6 checks = 12 seconds)
       if (hasPlaceholderText) {
