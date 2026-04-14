@@ -115,22 +115,43 @@ function getAnswerScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
-      // Method A: structured extraction via receive_message containers
-      const messages = document.querySelectorAll(
-        '[data-testid*="receive_message"], [class*="receive-message"]'
-      );
+      // ===== Method A: 精准定位 AI 回答容器 =====
+
+      // Step 1: 新版消息结构 - [data-message-id] + .flow-markdown-body
+      const messages = document.querySelectorAll('[data-message-id]');
       if (messages.length > 0) {
+        // 取最后一条消息
         const lastMsg = messages[messages.length - 1];
-        const textEl = lastMsg.querySelector(
-          '[data-testid="message_text_content"], [data-testid="message_content"]'
-        );
-        if (textEl) return clean(textEl.innerText || textEl.textContent || '');
+
+        // AI 回答有 .flow-markdown-body class，用户消息没有
+        const aiMarkdown = lastMsg.querySelector('.flow-markdown-body');
+        if (aiMarkdown) {
+          return clean(aiMarkdown.innerText);
+        }
+
+        // 如果最后一条是用户消息（无 markdown），向前找最近的 AI 回答
+        for (let i = messages.length - 2; i >= 0; i--) {
+          const markdown = messages[i].querySelector('.flow-markdown-body');
+          if (markdown) return clean(markdown.innerText);
+        }
       }
 
-      // Method B: full-page text extraction with noise removal
+      // Step 2: 旧版 fallback - receive_message 容器
+      const oldMsg = document.querySelectorAll('[data-testid*="receive_message"], [class*="receive-message"]');
+      if (oldMsg.length > 0) {
+        const lastMsg = oldMsg[oldMsg.length - 1];
+        const textEl = lastMsg.querySelector(
+          '[data-testid="message_text_content"], [data-testid="message_content"], .flow-markdown-body'
+        );
+        if (textEl) return clean(textEl.innerText);
+      }
+
+      // ===== Method B: 全页文本提取兜底（增强侧边栏移除） =====
       const root = document.body.cloneNode(true);
       [
-        '[data-testid="flow_chat_sidebar"]',
+        'navigation, nav',                        // 新版语义标签
+        '.left-side-U7A0kz',                      // 新版侧边栏 class
+        '[data-testid="flow_chat_sidebar"]',      // 旧版兼容
         '[data-testid="chat_input"]',
         '[data-testid="flow_chat_guidance_page"]',
       ].forEach(sel => {
