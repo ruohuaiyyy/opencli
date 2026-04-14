@@ -347,26 +347,32 @@ export const referencesCommand = cli({
     }
 
     // Expand reference sources section (click "参考 N 篇资料" button)
-    await page.wait(1);
-    const clickResult = await page.evaluate(`
-      (() => {
-        // Doubao uses a generic element (not <button>) for the reference toggle
-        const xpath = document.evaluate(
-          '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
-          document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-        );
-        const refBtn = xpath.singleNodeValue;
-        if (refBtn) {
-          refBtn.click();
-          return { clicked: true, hasRef: true };
-        }
-        // No reference button means the answer has no reference sources
-        return { clicked: false, hasRef: false };
-      })()
-    `) as { clicked: boolean; hasRef: boolean };
+    // Wait longer for the reference button to appear (it may be added to DOM after streaming ends)
+    await page.wait(2);
+
+    // Poll for reference button to appear (it can lag behind answer text by several seconds)
+    let refBtnInfo = null;
+    for (let i = 0; i < 8; i++) {
+      refBtnInfo = await page.evaluate(`
+        (() => {
+          const xpath = document.evaluate(
+            '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
+            document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+          );
+          const refBtn = xpath.singleNodeValue;
+          if (refBtn) {
+            return { found: true, text: refBtn.innerText?.trim() };
+          }
+          return { found: false };
+        })()
+      `) as { found: boolean; text?: string };
+
+      if (refBtnInfo.found) break;
+      await page.wait(1);
+    }
 
     // If no reference button exists, return empty immediately
-    if (!clickResult.hasRef) {
+    if (!refBtnInfo?.found) {
       const result = [{
         question,
         answer: answer || 'No response received within timeout.',
@@ -387,41 +393,30 @@ export const referencesCommand = cli({
       return result;
     }
 
-    // Reference button exists - wait for content to load
-    await page.wait(2);
-
-    // Scroll to ensure reference section is in viewport (triggers lazy loading)
+    // Click to expand the reference section
     await page.evaluate(`
       (() => {
-        const refBtn = document.evaluate(
+        const xpath = document.evaluate(
           '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
           document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-        ).singleNodeValue;
+        );
+        const refBtn = xpath.singleNodeValue;
         if (refBtn) {
-          refBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          refBtn.click();
         }
       })()
     `);
-    await page.wait(1);
 
-    // Poll to ensure reference content is fully loaded (first launch may be slow)
+    // Wait for lazy-loaded reference content to appear (click triggers API fetch)
+    await page.wait(3);
+
+    // Poll to ensure reference content is fully loaded
     let references = await extractDoubaoReferences(page);
-    const maxRetries = 5;
+    const maxRetries = 4;
     let retries = 0;
     while (references.length === 0 && retries < maxRetries) {
-      await page.wait(1.5);
-      // Re-click the reference button to trigger reload
-      await page.evaluate(`
-        (() => {
-          const xpath = document.evaluate(
-            '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
-            document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-          );
-          const refBtn = xpath.singleNodeValue;
-          if (refBtn) refBtn.click();
-        })()
-      `);
-      await page.wait(1);
+      await page.wait(2);
+      // Don't re-click (toggle behavior may close the panel), just wait and re-extract
       references = await extractDoubaoReferences(page);
       retries++;
     }
