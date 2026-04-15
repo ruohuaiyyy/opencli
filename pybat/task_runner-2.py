@@ -179,7 +179,7 @@ def load_result_file(file_path: str):
 # ---------- Main Loop ----------
 
 
-def process_task(task: dict) -> bool:
+def process_task(task: dict, worker_id: str) -> bool:
     """处理单个任务，返回是否成功"""
     task_id = task["id"]
     prompt = task.get("prompt", "")
@@ -213,7 +213,8 @@ def process_task(task: dict) -> bool:
                 "taskId": callback_task_id,
                 "type": "analysis",
                 "status": "failed",
-                "result": result_data
+                "result": result_data,
+                "workerId": worker_id
             }
             success = False
         else:
@@ -222,7 +223,8 @@ def process_task(task: dict) -> bool:
                 "taskId": callback_task_id,
                 "type": "analysis",
                 "status": "completed",
-                "result": result_data
+                "result": result_data,
+                "workerId": worker_id
             }
             success = True
 
@@ -290,7 +292,7 @@ def run_loop(worker_id: str, task_type: str) -> None:
 
             report_start(task_id, worker_id)
 
-            success = process_task(task)
+            success = process_task(task, worker_id)
 
             # 上报结果（status: 1=成功, 0=失败）
             report_result(task_id, status=1 if success else 0, worker_id=worker_id)
@@ -308,7 +310,7 @@ def run_loop(worker_id: str, task_type: str) -> None:
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 log.error("Reached max consecutive failures (%d), stopping task runner", 
                          MAX_CONSECUTIVE_FAILURES)
-                # break
+                break
             
             time.sleep(EXECUTE_INTERVAL)
 
@@ -319,7 +321,6 @@ def run_loop(worker_id: str, task_type: str) -> None:
         except Exception as e:
             log.error("Unexpected error in task loop: %s", str(e))
             time.sleep(PULL_INTERVAL)
-            consecutive_failures = 0  # 异常重置计数器（可选，根据需求调整）
     
     log.info("Task runner stopped")
 
