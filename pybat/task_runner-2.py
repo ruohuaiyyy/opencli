@@ -310,7 +310,7 @@ def run_loop(worker_id: str, task_type: str) -> None:
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 log.error("Reached max consecutive failures (%d), stopping task runner", 
                          MAX_CONSECUTIVE_FAILURES)
-                break
+                #break
             
             time.sleep(EXECUTE_INTERVAL)
 
