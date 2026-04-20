@@ -112,7 +112,10 @@ export async function sendCommand(
           || errMsg.includes('Extension not connected')
           || errMsg.includes('attach failed')
           || errMsg.includes('no longer exists')
-          || errMsg.includes('navigated or closed');
+          || errMsg.includes('navigated or closed')
+          || errMsg.includes('Detached while handling command')
+          || errMsg.includes('target navigated or closed')
+          || errMsg.includes('Inspected target navigated or closed');
         if (isTransient && attempt < maxRetries) {
           // Longer delay for extension recovery (service worker restart)
           await new Promise(r => setTimeout(r, 1500));
