@@ -14,44 +14,17 @@
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
 import { extractDoubaoReferences } from './extract-references.js';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import {
+  resolveDoubaoAccount,
+  loadDoubaoLastChatId,
+  saveDoubaoLastChatId,
+  clearDoubaoLastChatId,
+} from './account-config.js';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const DOUBAO_CHAT_URL = 'https://www.doubao.com/chat';
-const DOUBAO_CHAT_ID_FILE = join(homedir(), '.opencli', 'doubao-last-chat.json');
-
-/** Load last used chat ID from file. */
-function loadLastChatId(): string | null {
-  try {
-    if (!existsSync(DOUBAO_CHAT_ID_FILE)) return null;
-    const data = JSON.parse(readFileSync(DOUBAO_CHAT_ID_FILE, 'utf-8'));
-    return data?.chatId || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Clear saved chat ID (e.g., when session becomes invalid). */
-function clearLastChatId(): void {
-  try {
-    if (existsSync(DOUBAO_CHAT_ID_FILE)) {
-      unlinkSync(DOUBAO_CHAT_ID_FILE);
-    }
-  } catch {
-    // Silently ignore
-  }
-}
-
-/** Save chat ID to file for future reuse. */
-function saveLastChatId(chatId: string): void {
-  try {
-    mkdirSync(dirname(DOUBAO_CHAT_ID_FILE), { recursive: true });
-    writeFileSync(DOUBAO_CHAT_ID_FILE, JSON.stringify({ chatId, timestamp: Date.now() }, null, 2), 'utf-8');
-  } catch {
-    // Silently ignore save errors
-  }
-}
 
 /** Extract chat ID from URL if present. */
 function extractChatId(url: string): string | null {
@@ -297,9 +270,9 @@ function simpleHash(str: string): string {
 /** Ensure we are on a Doubao chat page, with optional chat reuse. */
 async function ensureChatPage(
   page: IPage,
-  options: { reuse?: boolean; chatId?: string } = {}
+  options: { reuse?: boolean; chatId?: string; account?: string } = {}
 ): Promise<void> {
-  const { reuse = false, chatId } = options;
+  const { reuse = false, chatId, account } = options;
 
   // If specific chat ID provided, navigate directly to it
   if (chatId) {
@@ -315,20 +288,20 @@ async function ensureChatPage(
     console.error(`⚠️ Chat ${chatId} not found (may be deleted), falling back to chat home`);
   }
 
-  // If reuse requested, try to load last chat ID
+  // If reuse requested, try to load last chat ID (account-aware)
   if (reuse) {
-    const lastChatId = loadLastChatId();
+    const lastChatId = loadDoubaoLastChatId(account);
     if (lastChatId) {
       const targetUrl = `https://www.doubao.com/chat/${lastChatId}`;
       await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
       await page.wait(5); // Wait for SPA hydration + CDP stabilization
       const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
       if (currentUrl?.includes(lastChatId)) {
-        console.error(`📌 Reusing last chat: ${lastChatId}`);
+        console.error(`📌 Reusing last chat: ${lastChatId} (account: ${account ?? 'legacy'})`);
         return;
       }
       // Chat no longer exists - clear saved ID and fall back
-      clearLastChatId();
+      clearDoubaoLastChatId(account);
       console.error(`⚠️ Last chat ${lastChatId} not found (may be deleted), cleared cache and falling back`);
     } else {
       console.error('ℹ️ No saved chat found, using default flow');
@@ -383,18 +356,78 @@ async function ensureChatPage(
 /**
  * Clear all chat content from the current Doubao conversation.
  *
- * Deletion flow (4 steps discovered via Playwright exploration):
- *   1. Hover AI response action bar → reveal hidden buttons
+ * Deletion flow (5 steps):
+ *   1. Hover over the last AI message to reveal action buttons (critical!)
  *   2. Click three-dot "more" button (SVG path contains "M5 10.5")
- *   3. Click "删除" menuitem in Radix UI dropdown
+ *   3. Click "删除" menuitem in dropdown
  *   4. Selection mode: click "删除" → confirm dialog: click "删除"
  */
 async function clearChatContent(page: IPage): Promise<boolean> {
   try {
-    // Step 1: Find and click the "more" (three dots) button using XPath - same approach as reference button click
+    // Step 0: Hover over the last AI message to reveal hidden action buttons
+    // This is critical - the three-dot button is only visible on hover
+    const hovered = await page.evaluate(`
+      (() => {
+        const msgs = document.querySelectorAll('[data-message-id]');
+        if (msgs.length === 0) return false;
+
+        const lastMsg = msgs[msgs.length - 1];
+        const rect = lastMsg.getBoundingClientRect();
+
+        // Scroll the message into view first
+        lastMsg.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        // Create hover events
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height - 20;
+
+        const mouseEnter = new MouseEvent('mouseenter', { bubbles: true, clientX: centerX, clientY: centerY });
+        const mouseOver = new MouseEvent('mouseover', { bubbles: true, clientX: centerX, clientY: centerY });
+
+        lastMsg.dispatchEvent(mouseEnter);
+        lastMsg.dispatchEvent(mouseOver);
+
+        return true;
+      })()
+    `) as boolean;
+
+    if (!hovered) {
+      return false;
+    }
+
+    // Small wait for buttons to appear after hover
+    await page.wait(0.5);
+
+    // Step 1: Find and click the "more" (three dots) button
+    // Use position-based detection: find buttons near the bottom of message
     const moreClicked = await page.evaluate(`
       (() => {
-        // Use XPath to find the button with three dots SVG - same technique as reference button
+        const msgs = document.querySelectorAll('[data-message-id]');
+        if (msgs.length === 0) return false;
+
+        const lastMsg = msgs[msgs.length - 1];
+        const msgRect = lastMsg.getBoundingClientRect();
+
+        // Find all visible buttons and look for three-dot button near message
+        const buttons = document.querySelectorAll('button');
+
+        for (const btn of buttons) {
+          const rect = btn.getBoundingClientRect();
+          // Button should be small (20-40px) and near message bottom
+          if (rect.width >= 20 && rect.width <= 40 && rect.height >= 20 && rect.height <= 40) {
+            // Check if button is positioned near message bottom
+            if (Math.abs(rect.top - (msgRect.top + msgRect.height - 50)) < 80) {
+              // Check for three-dot SVG path
+              const path = btn.querySelector('svg path');
+              if (path && path.getAttribute('d')?.includes('M5 10.5')) {
+                btn.click();
+                return true;
+              }
+            }
+          }
+        }
+
+        // Fallback: try XPath anyway
         const xpath = document.evaluate(
           '//button[.//svg//path[contains(@d, "M5 10.5")]]',
           document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
@@ -404,41 +437,53 @@ async function clearChatContent(page: IPage): Promise<boolean> {
           moreBtn.click();
           return true;
         }
+
         return false;
       })()
     `) as boolean;
 
     if (!moreClicked) {
-      console.error('⚠️ Could not click more button');
       return false;
     }
 
     // Wait for dropdown
     await page.wait(1);
 
-    // Step 2: Click "删除" menuitem - use XPath to find it
+    // Step 2: Click "删除" menuitem
     const deleteClicked = await page.evaluate(`
       (() => {
-        const xpath = document.evaluate(
+        // Try role="menuitem" first
+        let xpath = document.evaluate(
           '//*[contains(text(), "删除") and @role="menuitem"]',
           document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
         );
-        const delItem = xpath.singleNodeValue;
+        let delItem = xpath.singleNodeValue;
         if (delItem) {
           delItem.click();
           return true;
         }
+
+        // Fallback: any element with 删除 text that's clickable
+        xpath = document.evaluate(
+          '//*[contains(text(), "删除")]',
+          document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
+        );
+        delItem = xpath.singleNodeValue;
+        if (delItem) {
+          delItem.click();
+          return true;
+        }
+
         return false;
       })()
     `) as boolean;
 
     if (!deleteClicked) {
-      console.error('⚠️ Could not click 删除');
       return false;
     }
 
     // Wait for selection mode
-    await page.wait(0.5);
+    await page.wait(0.8);
 
     // Step 3: Click 删除 button in selection toolbar
     const selDelClicked = await page.evaluate(`
@@ -457,8 +502,8 @@ async function clearChatContent(page: IPage): Promise<boolean> {
     `) as boolean;
 
     if (!selDelClicked) {
-      console.error('⚠️ Could not click selection 删除');
-      return false;
+      // Selection mode might not appear if only one message
+      return true;
     }
 
     // Wait for confirm dialog
@@ -481,15 +526,12 @@ async function clearChatContent(page: IPage): Promise<boolean> {
     `) as boolean;
 
     if (!confirmed) {
-      console.error('⚠️ Could not confirm');
-      return false;
+      // Continue anyway
     }
 
     await page.wait(2);
-    console.error('🗑️ Cleared');
     return true;
   } catch (err) {
-    console.error(`⚠️ Failed to clear chat content: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -510,6 +552,7 @@ export const referencesCommand = cli({
     { name: 'reuse', required: false, help: 'Reuse last conversation (default: false)', default: 'false' },
     { name: 'chat-id', required: false, help: 'Specific chat ID to use (overrides --reuse)' },
     { name: 'clear', required: false, help: 'Clear chat content after extraction (default: false)', default: 'false' },
+    { name: 'account', required: false, help: 'Account name for multi-account isolation (default: legacy global file)' },
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
@@ -518,8 +561,12 @@ export const referencesCommand = cli({
     const reuse = kwargs.reuse === 'true' || kwargs.reuse === true;
     const chatId = kwargs['chat-id'] as string | undefined;
     const clear = kwargs.clear === 'true' || kwargs.clear === true;
+    const accountName = (kwargs.account as string | undefined)?.trim() || undefined;
 
-    await ensureChatPage(page, { reuse, chatId });
+    // Resolve account (creates entry if needed, updates lastUsed)
+    const account = resolveDoubaoAccount(accountName);
+
+    await ensureChatPage(page, { reuse, chatId, account });
 
     // ===== Anti-throttling: Override Visibility API =====
     // Prevents Chrome background tab throttling from suspending Doubao's JS execution.
@@ -780,11 +827,11 @@ export const referencesCommand = cli({
         references: [],
       }];
 
-      // Save current chat ID for future reuse
-      const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+      // Save current chat ID for future reuse (account-aware)
+      const currentUrl = await safeEval(() => 'window.location.href') as string;
       const currentChatId = extractChatId(currentUrl || '');
       if (currentChatId) {
-        saveLastChatId(currentChatId);
+        saveDoubaoLastChatId(currentChatId, account);
       }
 
       // Save result
@@ -846,7 +893,7 @@ export const referencesCommand = cli({
     const currentUrl = await safeEval(() => 'window.location.href') as string;
     const currentChatId = extractChatId(currentUrl || '');
     if (currentChatId) {
-      saveLastChatId(currentChatId);
+      saveDoubaoLastChatId(currentChatId, account);
     }
 
     // Save to file

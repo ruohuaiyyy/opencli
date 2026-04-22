@@ -7,22 +7,22 @@ set "identifier=%USERNAME%"
 
 powershell.exe -ExecutionPolicy Bypass -File "%~dp0is_process_running.ps1" -Keyword "qwen"
 if %errorlevel% equ 0 goto :skip_qwen
-start /b pythonw.exe %script% %identifier% --type opencli-analysis-qwen
+start /b pythonw.exe %script% %identifier% --type opencli-analysis-qwen --restart-after 2
 :skip_qwen
 
 powershell.exe -ExecutionPolicy Bypass -File "%~dp0is_process_running.ps1" -Keyword "deepseek"
 if %errorlevel% equ 0 goto :skip_deepseek
-start /b pythonw.exe %script% %identifier% --type opencli-analysis-deepseek
+start /b pythonw.exe %script% %identifier% --type opencli-analysis-deepseek --restart-after 2
 :skip_deepseek
 
 powershell.exe -ExecutionPolicy Bypass -File "%~dp0is_process_running.ps1" -Keyword "yuanbao"
 if %errorlevel% equ 0 goto :skip_yuanbao
-start /b pythonw.exe %script% %identifier% --type opencli-analysis-yuanbao
+start /b pythonw.exe %script% %identifier% --type opencli-analysis-yuanbao --restart-after 2
 :skip_yuanbao
 
 powershell.exe -ExecutionPolicy Bypass -File "%~dp0is_process_running.ps1" -Keyword "doubao"
 if %errorlevel% equ 0 goto :skip_doubao
-start /b pythonw.exe %script% %identifier% --type opencli-analysis-doubao
+start /b pythonw.exe %script% %identifier% --type opencli-analysis-doubao --restart-after 2
 :skip_doubao
 
 echo OK
