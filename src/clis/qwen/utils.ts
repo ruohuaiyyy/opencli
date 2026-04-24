@@ -251,14 +251,40 @@ function clickNewChatScript(): string {
 function isStreamingScript(): string {
   return `
     (() => {
-      const indicators = document.querySelectorAll(
-        '[class*="loading"]',
+      // Only check elements that are likely AI response indicators,
+      // NOT general UI loading elements like scroll-to-bottom, image loading, etc.
+      const allElements = document.querySelectorAll('*');
+      
+      // Collect class names, excluding common UI component loading patterns
+      const streamingClassPatterns = ['typing', 'streaming', 'thinking', 'generating'];
+      const loadingPatterns = ['loading'];  // Separate handling below
+      
+      // Check for clear streaming/typing/generating indicators
+      const streamingIndicators = document.querySelectorAll(
         '[class*="typing"]',
-        '[class*="streaming"]',
+        '[class*="streaming"]', 
         '[class*="thinking"]',
         '[class*="generating"]',
       );
-      if (indicators.length > 0) return true;
+      if (streamingIndicators.length > 0) return true;
+      
+      // For "loading" class, only count it if it's within the answer area (.qk-markdown or .answerItem)
+      // Exclude: scrollToBottomLoading, imageLoading, etc.
+      const loadingElements = document.querySelectorAll('[class*="loading"]');
+      let hasRelevantLoading = false;
+      loadingElements.forEach((el) => {
+        const cls = (el.className || '').toLowerCase();
+        // Skip known UI component loading patterns
+        if (cls.includes('scroll') || cls.includes('image') || cls.includes('img') || 
+            cls.includes('skeleton') || cls.includes('placeholder')) {
+          return;
+        }
+        // Only count if within answer area
+        if (el.closest('.qk-markdown') || el.closest('.answerItem') || el.closest('[class*="answer"]')) {
+          hasRelevantLoading = true;
+        }
+      });
+      if (hasRelevantLoading) return true;
 
       const allText = document.body.innerText || '';
       if (allText.includes('思考中') || allText.includes('生成中') || allText.includes('正在处理')) {
@@ -405,11 +431,19 @@ export async function sendQwenMessage(page: IPage, text: string): Promise<string
   // Click using Playwright's native click (dispatches real mousedown/mouseup/click
   // events through the browser's event system, which React's event delegation picks up)
   try {
-    await page.click('.operateBtn-ehxNOr');
+    // Try aria-label based selector first (more stable than hash classes)
+    await page.click('button[aria-label="发送消息"]');
     await page.wait(1);
     return 'send-button-click';
   } catch (_clickErr) {
-    // fallback to Enter key
+    // Fallback to old class-based selector
+    try {
+      await page.click('.operateBtn-ehxNOr');
+      await page.wait(1);
+      return 'send-button-click';
+    } catch (_clickErr2) {
+      // fallback to Enter key
+    }
   }
 
   // Fallback: press Enter on the focused editor

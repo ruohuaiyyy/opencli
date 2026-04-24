@@ -1,27 +1,22 @@
 /**
  * DOM extraction logic for Qwen web reference sources.
  *
- * DOM structure (verified via Playwright inspection, 2026-04-02):
+ * DOM structure (verified via Playwright inspection, 2026-04-24):
  *
- *   Reference data lives in a SIDE PANEL, NOT inside .reference-wrap:
+ *   Reference data is rendered in the .splitCardContainer below the answer:
  *
  *   .splitCardContainer
- *     > div[id^=":rqf:"]                          ← side panel container
- *       > .deep-think-source-tyxrXL                ← references section
- *         > .list-XPxyL2                            ← list container
- *           > .source-item-mqZd08                   ← each reference item
- *               data-click-extra   → JSON { "ref_url": "https://..." }
- *               data-exposure-extra → JSON { "ref_url": "https://..." }
- *             > .header-uMVjR7
- *                 > .index-Wqr8au                    → "1", "2", ...
- *                 > .title-TP9iyp                    → article title
- *             > .source-kRyJmz
- *                 > img.logo-vzyz1y                  → source icon
- *                 > .name-o0jtvK                     → "今日头条 www.toutiao.com"
+ *     > .ref-cite-wrapper-A69wZp               ← new container (was sSfK3h)
+ *       > .ref-cite-item-bh0ojo                ← each reference item (was mqZd08)
+ *           data-url       → "https://..."     ← direct URL attribute
+ *           data-title     → "参考标题"
+ *           data-source    → "来源名称"
+ *           data-abstract  → "摘要内容"
+ *       > .ref-cite-item-bh0ojo
+ *       > ...
+ *       > div                                  ← "N篇来源" label
  *
- *   The .reference-wrap-iEjeb3 element only contains the collapsed toggle button
- *   ("N篇来源") and does NOT contain reference data even after expansion.
- *   The actual data is rendered in a separate split-card side panel.
+ *   NOTE: References are rendered inline with data-* attributes, not in data-click-extra JSON.
  *
  *   IMPORTANT: The side panel is SHARED across all conversations in the session.
  *   To get references for the CURRENT question only, callers must:
@@ -46,18 +41,68 @@ export interface QwenReference {
 function snapshotRefUrlsScript(): string {
   return `
     (() => {
-      const items = document.querySelectorAll('.source-item-mqZd08');
       const urls = new Set();
-      items.forEach((item) => {
+      
+      // Method 1: Extract from <script type="application/json" data-used-by="hydrate">
+      const scriptTags = document.querySelectorAll('script[type="application/json"][data-used-by="hydrate"], script[id^="s-data-card_video"]');
+      for (const script of scriptTags) {
+        const text = script.textContent || '';
+        if (!text.includes('"list"')) continue;
+        
         try {
-          const extra = item.getAttribute('data-click-extra') || item.getAttribute('data-exposure-extra') || '';
-          if (extra) {
-            const parsed = JSON.parse(extra);
-            const url = parsed.ref_url || parsed.url || '';
+          const parsed = JSON.parse(text);
+          const contentList = parsed?.data?.originalData?.content?.list || [];
+          for (const item of contentList) {
+            const url = item.url || item.norm_url || '';
             if (url) urls.add(url);
           }
-        } catch (_e) { /* ignore */ }
-      });
+        } catch (_e) { /* skip */ }
+        if (urls.size > 0) break;
+      }
+      
+      // Method 2: Extract from embedded JSON in data-exposure-extra
+      if (urls.size === 0) {
+        const dataElements = document.querySelectorAll('[data-exposure-extra]');
+        for (const el of dataElements) {
+          const exposureData = el.getAttribute('data-exposure-extra') || '';
+          if (!exposureData || !exposureData.includes('"list"')) continue;
+          
+          try {
+            const parsed = JSON.parse(exposureData);
+            const contentList = parsed?.data?.originalData?.content?.list || [];
+            for (const item of contentList) {
+              const url = item.url || item.norm_url || '';
+              if (url) urls.add(url);
+            }
+          } catch (_e) { /* skip */ }
+          if (urls.size > 0) break;
+        }
+      }
+      
+      // Method 3: New selector - items with data-url attribute
+      if (urls.size === 0) {
+        const newItems = document.querySelectorAll('[data-url][data-title]');
+        newItems.forEach((item) => {
+          const url = item.getAttribute('data-url') || '';
+          if (url) urls.add(url);
+        });
+      }
+      
+      // Method 4: Legacy selector - items with data-click-extra JSON (backward compat)
+      if (urls.size === 0) {
+        const legacyItems = document.querySelectorAll('.source-item-mqZd08, [data-click-extra]');
+        legacyItems.forEach((item) => {
+          try {
+            const extra = item.getAttribute('data-click-extra') || item.getAttribute('data-exposure-extra') || '';
+            if (extra) {
+              const parsed = JSON.parse(extra);
+              const url = parsed.ref_url || parsed.url || '';
+              if (url) urls.add(url);
+            }
+          } catch (_e) { /* ignore */ }
+        });
+      }
+      
       return Array.from(urls);
     })()
   `;
@@ -70,53 +115,141 @@ function extractNewReferencesScript(): string {
   return `
     ((beforeUrls) => {
       const beforeSet = new Set(beforeUrls || []);
-      const items = document.querySelectorAll('.source-item-mqZd08');
-      if (items.length === 0) return [];
-
       const refs = [];
-      items.forEach((item) => {
-        let url = '';
+      
+      // Method 1: Extract from <script type="application/json" data-used-by="hydrate"> (verified 2026-04-24)
+      // Qwen embeds reference data as JSON in script tags for hydration
+      const scriptTags = document.querySelectorAll('script[type="application/json"][data-used-by="hydrate"], script[id^="s-data-card_video"]');
+      for (const script of scriptTags) {
+        const text = script.textContent || '';
+        if (!text.includes('"list"')) continue;
+        
         try {
-          const extra = item.getAttribute('data-click-extra') || item.getAttribute('data-exposure-extra') || '';
-          if (extra) {
-            const parsed = JSON.parse(extra);
-            url = parsed.ref_url || parsed.url || '';
+          const parsed = JSON.parse(text);
+          const contentList = parsed?.data?.originalData?.content?.list || [];
+          
+          for (const item of contentList) {
+            const url = item.url || item.norm_url || '';
+            const title = item.title || '';
+            const source = item.author || '';
+            const snippet = item.intro || item.title || '';  // Fallback to title if intro is empty
+            
+            // Skip references that existed before
+            if (url && beforeSet.has(url)) continue;
+            
+            if (title || url) {
+              refs.push({
+                index: refs.length + 1,
+                title: title.substring(0, 300),
+                url: url.substring(0, 500),
+                snippet: snippet.substring(0, 500),
+                source: source.substring(0, 100),
+              });
+            }
           }
-        } catch (_e) { /* ignore */ }
-
-        // Skip references that existed before this question was sent
-        if (url && beforeSet.has(url)) return;
-
-        // Title
-        const titleEl = item.querySelector('.title-TP9iyp');
-        const title = titleEl ? (titleEl.textContent || '').trim() : '';
-
-        // Source name (e.g., "今日头条 www.toutiao.com")
-        const nameEl = item.querySelector('.name-o0jtvK');
-        const source = nameEl ? (nameEl.textContent || '').trim() : '';
-
-        // Index number
-        const indexEl = item.querySelector('.index-Wqr8au');
-        const rawIndex = indexEl ? (indexEl.textContent || '').trim() : '';
-
-        // Snippet: full text minus title and source — keep the rest as-is.
-        const fullText = (item.textContent || '').trim();
-        let snippet = fullText;
-        if (title) snippet = snippet.replace(title, '').trim();
-        if (source) snippet = snippet.replace(source, '').trim();
-        snippet = snippet.substring(0, 500);
-
-        if (title || source || url) {
-          refs.push({
-            index: parseInt(rawIndex, 10) || refs.length + 1,
-            title: title.substring(0, 300),
-            url,
-            snippet,
-            source: source.substring(0, 100),
-          });
+        } catch (_e) { /* skip invalid JSON */ }
+        
+        // Stop after finding valid data to avoid duplicates
+        if (refs.length > 0) break;
+      }
+      
+      // Method 2: Extract from embedded JSON in data-exposure-extra (fallback)
+      if (refs.length === 0) {
+        const dataElements = document.querySelectorAll('[data-exposure-extra]');
+        for (const el of dataElements) {
+          const exposureData = el.getAttribute('data-exposure-extra') || '';
+          if (!exposureData || !exposureData.includes('"list"')) continue;
+          
+          try {
+            const parsed = JSON.parse(exposureData);
+            const contentList = parsed?.data?.originalData?.content?.list || [];
+            
+            for (const item of contentList) {
+              const url = item.url || item.norm_url || '';
+              const title = item.title || '';
+              const source = item.author || '';
+              const snippet = item.intro || '';
+              
+              if (url && beforeSet.has(url)) continue;
+              
+              if (title || url) {
+                refs.push({
+                  index: refs.length + 1,
+                  title: title.substring(0, 300),
+                  url: url.substring(0, 500),
+                  snippet: snippet.substring(0, 500),
+                  source: source.substring(0, 100),
+                });
+              }
+            }
+          } catch (_e) { /* skip invalid JSON */ }
+          
+          if (refs.length > 0) break;
         }
-      });
-
+      }
+      
+      // Method 3: New selector - items with data-* attributes (fallback)
+      if (refs.length === 0) {
+        const newItems = document.querySelectorAll('[data-url][data-title]');
+        newItems.forEach((item) => {
+          const url = item.getAttribute('data-url') || '';
+          const title = (item.getAttribute('data-title') || '').trim();
+          const source = (item.getAttribute('data-source') || '').trim();
+          const snippet = (item.getAttribute('data-abstract') || '').trim();
+          
+          if (url && beforeSet.has(url)) return;
+          
+          if (title || source || url) {
+            refs.push({
+              index: refs.length + 1,
+              title: title.substring(0, 300),
+              url,
+              snippet: snippet.substring(0, 500),
+              source: source.substring(0, 100),
+            });
+          }
+        });
+      }
+      
+      // Method 4: Legacy selector - items with data-click-extra JSON (backward compat)
+      if (refs.length === 0) {
+        const legacyItems = document.querySelectorAll('.source-item-mqZd08');
+        legacyItems.forEach((item) => {
+          let url = '';
+          try {
+            const extra = item.getAttribute('data-click-extra') || item.getAttribute('data-exposure-extra') || '';
+            if (extra) {
+              const parsed = JSON.parse(extra);
+              url = parsed.ref_url || parsed.url || '';
+            }
+          } catch (_e) { /* ignore */ }
+          
+          if (url && beforeSet.has(url)) return;
+          
+          const titleEl = item.querySelector('.title-TP9iyp');
+          const title = titleEl ? (titleEl.textContent || '').trim() : '';
+          const nameEl = item.querySelector('.name-o0jtvK');
+          const source = nameEl ? (nameEl.textContent || '').trim() : '';
+          const indexEl = item.querySelector('.index-Wqr8au');
+          const rawIndex = indexEl ? (indexEl.textContent || '').trim() : '';
+          const fullText = (item.textContent || '').trim();
+          let snippet = fullText;
+          if (title) snippet = snippet.replace(title, '').trim();
+          if (source) snippet = snippet.replace(source, '').trim();
+          snippet = snippet.substring(0, 500);
+          
+          if (title || source || url) {
+            refs.push({
+              index: parseInt(rawIndex, 10) || refs.length + 1,
+              title: title.substring(0, 300),
+              url,
+              snippet,
+              source: source.substring(0, 100),
+            });
+          }
+        });
+      }
+      
       return refs;
     })
   `;

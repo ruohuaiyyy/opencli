@@ -142,30 +142,18 @@ export const referencesCommand = cli({
       return [{ question, answer: `No response received within ${timeout}s.`, references: [] }];
     }
 
-    // Expand reference panel for the LATEST answer (not a previous one).
-    // Each .answerItem has its own toggle; clicking a previous one would close it.
-    try {
-      await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
-    } catch (_clickErr) {
-      try {
-        await page.click('.link-title-igf0OC');
-      } catch { /* no toggle found */ }
-    }
-    await page.wait(1);
+    // Wait for reference panel to render.
+    // After sending a message, Qwen renders references in .splitCardContainer below the answer.
+    // References may be expanded by default, or collapsed showing "N篇来源".
+    await page.wait(2);
 
     // Poll for NEW source items (excluding ones that existed before we sent).
+    // References are embedded in <script type="application/json"> tags, no click needed.
     let references: QwenReference[] = [];
     for (let attempt = 0; attempt < 10; attempt++) {
       await page.wait(2);
       references = await extractNewQwenReferences(page, beforeRefUrls);
       if (references.length > 0) break;
-
-      // Re-attempt toggle click once if still empty after ~6s
-      if (attempt === 3 && references.length === 0) {
-        try {
-          await page.click('.answerItem-sQ6QT6:last-of-type .link-title-igf0OC');
-        } catch { /* ignore */ }
-      }
     }
 
     const result = [{ question, answer, references }];
