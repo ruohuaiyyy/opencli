@@ -145,10 +145,42 @@ export const referencesCommand = cli({
     // Wait for reference panel to render.
     // After sending a message, Qwen renders references in .splitCardContainer below the answer.
     // References may be expanded by default, or collapsed showing "N篇来源".
-    await page.wait(2);
+await page.wait(2);
+
+    // IMPORTANT: Click to expand the references panel if it's collapsed (showing "N篇来源").
+    // The data is ONLY present in DOM when the panel is expanded.
+    // Follow yuanbao's approach: find clickable parent element.
+    await page.evaluate(`
+      (() => {
+        const allTexts = Array.from(document.querySelectorAll('*'));
+        const sourceBtns = allTexts.filter(el => {
+          if (el.children.length > 0) return false;
+          const text = (el.textContent || '').trim();
+          return /^\\d+篇来源$/.test(text) && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
+        });
+        const btn = sourceBtns[sourceBtns.length - 1];
+        if (btn) {
+          // Follow yuanbao's pattern: traverse up to find clickable parent
+          let clickable = btn;
+          for (let i = 0; i < 5 && clickable; i++) {
+            if (clickable.onclick || clickable.getAttribute('role') === 'button'
+              || clickable.className?.includes('cursor') || clickable.style?.cursor === 'pointer') {
+              clickable.click();
+              return true;
+            }
+            clickable = clickable.parentElement;
+          }
+          // Fallback: click the button directly
+          btn.click();
+          return true;
+        }
+        return false;
+      })()
+    `);
+    // Wait for panel expand animation
+    await page.wait(5);
 
     // Poll for NEW source items (excluding ones that existed before we sent).
-    // References are embedded in <script type="application/json"> tags, no click needed.
     let references: QwenReference[] = [];
     for (let attempt = 0; attempt < 10; attempt++) {
       await page.wait(2);
