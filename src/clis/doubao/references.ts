@@ -552,7 +552,7 @@ export const referencesCommand = cli({
     { name: 'reuse', required: false, help: 'Reuse last conversation (default: false)', default: 'false' },
     { name: 'chat-id', required: false, help: 'Specific chat ID to use (overrides --reuse)' },
     { name: 'clear', required: false, help: 'Clear chat content after extraction (default: false)', default: 'false' },
-    { name: 'account', required: false, help: 'Account name for multi-account isolation (default: legacy global file)' },
+    { name: 'account', required: false, help: 'Account name for multi-account isolation' },
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
@@ -566,7 +566,7 @@ export const referencesCommand = cli({
     // Resolve account (creates entry if needed, updates lastUsed)
     const account = resolveDoubaoAccount(accountName);
 
-    await ensureChatPage(page, { reuse, chatId, account });
+    await ensureChatPage(page, { reuse, chatId, account: accountName });
 
     // ===== Anti-throttling: Override Visibility API =====
     // Prevents Chrome background tab throttling from suspending Doubao's JS execution.
@@ -831,7 +831,7 @@ export const referencesCommand = cli({
       const currentUrl = await safeEval(() => 'window.location.href') as string;
       const currentChatId = extractChatId(currentUrl || '');
       if (currentChatId) {
-        saveDoubaoLastChatId(currentChatId, account);
+saveDoubaoLastChatId(currentChatId, accountName);
       }
 
       // Save result
@@ -893,7 +893,7 @@ export const referencesCommand = cli({
     const currentUrl = await safeEval(() => 'window.location.href') as string;
     const currentChatId = extractChatId(currentUrl || '');
     if (currentChatId) {
-      saveDoubaoLastChatId(currentChatId, account);
+      saveDoubaoLastChatId(currentChatId, accountName);
     }
 
     // Save to file

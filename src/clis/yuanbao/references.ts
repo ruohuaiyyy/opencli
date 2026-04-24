@@ -1,12 +1,14 @@
 /**
  * Standalone command: ask Yuanbao and return answer + reference sources as JSON.
  *
- * Fully independent — does not import any existing yuanbao utils.
- * Implements its own: page navigation, input injection, send, response polling,
- * and reference card extraction.
+ * Supports --reuse to continue the last conversation, --chat-id to resume a specific
+ * chat, and --account for multi-account isolation.
  *
  * Usage:
  *   opencli yuanbao references "大同旅游景点推荐" -f json
+ *   opencli yuanbao references "问题" --reuse          # 复用上次会话
+ *   opencli yuanbao references "问题" --chat-id "naQivTmsDa/xxx"  # 指定会话 ID
+ *   opencli yuanbao references "问题" --account work  # 多账号隔离
  */
 
 import { cli, Strategy } from '../../registry.js';
@@ -15,6 +17,13 @@ import { extractYuanbaoReferences } from './extract-references.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import {
+  resolveYuanbaoAccount,
+  loadYuanbaoLastChatId,
+  saveYuanbaoLastChatId,
+  clearYuanbaoLastChatId,
+  extractYuanbaoChatId,
+} from './account-config.js';
 
 const YUANBAO_CHAT_URL = 'https://yuanbao.tencent.com/chat';
 
@@ -117,7 +126,6 @@ function getAnswerScript(): string {
         .trim();
 
       // Method A: structured extraction - directly get AI answer content
-      // 使用精确的 DOM 选择器直接提取 AI 回答
       const contentEl = document.querySelector(
         '.agent-chat__list__deepseek .agent-chat__list__content-wrapper:last-child .agent-chat__list__content'
       );
@@ -165,7 +173,6 @@ function getAnswerScript(): string {
 function isStreamingScript(): string {
   return `
     (() => {
-      // Check for streaming indicators: typing dots, indicator elements
       const indicators = document.querySelectorAll(
         '[class*="loading"]',
         '[class*="typing"]',
@@ -178,7 +185,6 @@ function isStreamingScript(): string {
       );
       if (indicators.length > 0) return true;
 
-      // Check for "思考中" or "搜索中" text
       const allText = document.body.innerText || '';
       if (allText.includes('思考中') || allText.includes('搜索中') || allText.includes('正在生成')) {
         return true;
@@ -187,29 +193,6 @@ function isStreamingScript(): string {
       return false;
     })()
   `;
-}
-
-/** Ensure we are on a Yuanbao chat page, navigating or switching tabs if needed. */
-async function ensureChatPage(page: IPage): Promise<void> {
-  const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
-  if (typeof currentUrl === 'string' && currentUrl.includes('yuanbao.tencent.com/chat')) {
-    return;
-  }
-
-  // Try to switch to an existing yuanbao.tencent.com/chat tab
-  const rawTabs = await page.tabs().catch(() => []) as any[];
-  if (Array.isArray(rawTabs) && rawTabs.length > 0) {
-    const yuanbaoTabs = rawTabs.filter((t) =>
-      typeof t?.url === 'string' && t.url.includes('yuanbao.tencent.com/chat')
-    );
-    if (yuanbaoTabs.length > 0) {
-      await page.selectTab(yuanbaoTabs[0].index);
-      await page.wait(0.8);
-      return;
-    }
-  }
-
-  await page.goto(YUANBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
 }
 
 export const referencesCommand = cli({
@@ -225,13 +208,71 @@ export const referencesCommand = cli({
     { name: 'text', required: true, positional: true, help: 'Question to ask Yuanbao' },
     { name: 'timeout', required: false, help: 'Max seconds to wait (default: 300)', default: '300' },
     { name: 'output', required: false, help: 'Save result to file (e.g. my-query.json)' },
+    { name: 'reuse', required: false, help: 'Reuse last conversation (default: false)', default: 'false' },
+    { name: 'chat-id', required: false, help: 'Specific chat ID to use (overrides --reuse)' },
+    { name: 'account', required: false, help: 'Account name for multi-account isolation' },
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
     const question = kwargs.text as string;
     const timeout = parseInt(kwargs.timeout as string, 10) || 300;
+    const reuse = kwargs.reuse === 'true' || kwargs.reuse === true;
+    const chatId = kwargs['chat-id'] as string | undefined;
+    const accountName = (kwargs.account as string | undefined)?.trim() || undefined;
 
-    await ensureChatPage(page);
+    // Resolve account (creates entry if needed, updates lastUsed) — separate from load/save
+    resolveYuanbaoAccount(accountName);
+
+    // Handle reuse: load last chat ID from storage
+    if (reuse) {
+      const lastChatId = loadYuanbaoLastChatId(accountName);
+      if (lastChatId) {
+        const targetUrl = `${YUANBAO_CHAT_URL}/${lastChatId}`;
+        await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
+        await page.wait(5);
+        const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+        if (currentUrl?.includes(lastChatId)) {
+          console.error(`📌 Reusing last chat: ${lastChatId}`);
+        } else {
+          clearYuanbaoLastChatId(accountName);
+          console.error(`⚠️ Last chat ${lastChatId} not found, cleared cache`);
+        }
+      } else {
+        console.error('ℹ️ No saved chat found, using default flow');
+      }
+    } else if (chatId) {
+      const targetUrl = `${YUANBAO_CHAT_URL}/${chatId}`;
+      await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
+      await page.wait(5);
+      const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+      if (currentUrl?.includes(chatId)) {
+        console.error(`📌 Using specified chat: ${chatId}`);
+      } else {
+        console.error(`⚠️ Chat ${chatId} not found, falling back to chat home`);
+      }
+    }
+
+    // Fallback: ensure we are on a yuanbao chat page
+    const currentUrlFallback = await page.evaluate('window.location.href').catch(() => '') as string;
+    if (typeof currentUrlFallback === 'string' && currentUrlFallback.includes('yuanbao.tencent.com/chat')) {
+      // Stay on current page
+    } else {
+      const rawTabs = await page.tabs().catch(() => []) as any[];
+      if (Array.isArray(rawTabs) && rawTabs.length > 0) {
+        const yuanbaoTabs = rawTabs.filter((t) =>
+          typeof t?.url === 'string' && t.url.includes('yuanbao.tencent.com/chat')
+        );
+        if (yuanbaoTabs.length > 0) {
+          await page.selectTab(yuanbaoTabs[0].index);
+          await page.wait(0.8);
+        } else {
+          await page.goto(YUANBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
+        }
+      } else {
+        await page.goto(YUANBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
+      }
+    }
+
     await page.wait(1);
 
     // Snapshot answer before sending
@@ -284,7 +325,6 @@ export const referencesCommand = cli({
 
       if (!current || current === answerBefore) continue;
 
-      // Check if AI is still streaming/generating
       const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
       if (isStreaming) {
         streamingDetected = true;
@@ -300,7 +340,6 @@ export const referencesCommand = cli({
         stableCount = 1;
       }
 
-      // If we detected streaming before, require longer stability (4 checks = 8 seconds)
       const requiredStable = streamingDetected ? 4 : 2;
       if (stableCount >= requiredStable) break;
     }
@@ -309,17 +348,14 @@ export const referencesCommand = cli({
     await page.wait(1.5);
     await page.evaluate(`
       (() => {
-        // Find all "源" buttons in the response area and click the last one (latest response)
         const allTexts = Array.from(document.querySelectorAll('*'));
         const yuanBtns = allTexts.filter(el => {
           if (el.children.length > 0) return false;
           const text = (el.textContent || '').trim();
           return text === '源' && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
         });
-        // Click the last "源" button (most recent response)
         const btn = yuanBtns[yuanBtns.length - 1];
         if (btn) {
-          // Find the actual clickable parent
           let clickable = btn;
           for (let i = 0; i < 5 && clickable; i++) {
             if (clickable.onclick || clickable.getAttribute('role') === 'button'
@@ -329,7 +365,6 @@ export const referencesCommand = cli({
             }
             clickable = clickable.parentElement;
           }
-          // Fallback: just click the element
           btn.click();
           return true;
         }
@@ -350,7 +385,6 @@ export const referencesCommand = cli({
     // Save to file
     const outPath = kwargs.output as string | undefined;
     const homeDir = homedir();
-    // homedir() may return '~' in some environments; fallback to env var
     const resolvedHome = homeDir === '~'
       ? (process.env.USERPROFILE || process.env.HOME || process.cwd())
       : homeDir;
@@ -361,6 +395,13 @@ export const referencesCommand = cli({
     const filePath = outPath ? join(saveDir, outPath) : join(saveDir, `yuanbao-${timestamp}.json`);
     writeFileSync(filePath, JSON.stringify(result, null, 2), 'utf-8');
     console.error(`💾 Saved to ${filePath}`);
+
+    // Save current chat ID for future reuse
+    const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+    const id = extractYuanbaoChatId(currentUrl || '');
+    if (id) {
+      saveYuanbaoLastChatId(id, accountName);
+    }
 
     return result;
   },

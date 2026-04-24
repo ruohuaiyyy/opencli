@@ -1,11 +1,14 @@
 /**
  * Standalone command: ask DeepSeek and return answer + reference sources as JSON.
  *
- * Fully independent — implements its own page navigation, input injection, send,
- * response polling, and reference card extraction.
+ * Supports --reuse to continue the last conversation, --chat-id to resume a specific
+ * chat, and --account for multi-account isolation.
  *
  * Usage:
  *   opencli deepseek references "大同旅游景点推荐" -f json
+ *   opencli deepseek references "问题" --reuse          # 复用上次会话
+ *   opencli deepseek references "问题" --chat-id xxx    # 指定会话 ID
+ *   opencli deepseek references "问题" --account work  # 多账号隔离
  */
 
 import { cli, Strategy } from '../../registry.js';
@@ -15,8 +18,44 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { ensureDeepseekChatPage, enableDeepseekInternetSearch } from './utils.js';
+import {
+  resolveDeepseekAccount,
+  loadDeepseekLastChatId,
+  saveDeepseekLastChatId,
+  clearDeepseekLastChatId,
+  extractDeepseekChatId,
+} from './account-config.js';
 
 const DEEPSEEK_CHAT_URL = 'https://chat.deepseek.com';
+
+/** Ensure we are on a DeepSeek chat page, with optional chat reuse. */
+async function ensureChatPage(
+  page: IPage,
+  options: { reuse?: boolean; chatId?: string } = {}
+): Promise<void> {
+  const { reuse = false, chatId } = options;
+
+  // If specific chat ID provided, navigate directly to it
+  if (chatId) {
+    const targetUrl = `https://chat.deepseek.com/a/chat/s/${chatId}`;
+    await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
+    await page.wait(5);
+    const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+    if (currentUrl?.includes(chatId)) {
+      console.error(`📌 Using specified chat: ${chatId}`);
+      return;
+    }
+    console.error(`⚠️ Chat ${chatId} not found, falling back to chat home`);
+  }
+
+  // If reuse requested, try to load last chat ID
+  if (reuse) {
+    console.error('ℹ️ No saved chat found, using default flow');
+  }
+
+  // Fallback: use existing behavior (reuse tab or go to chat home)
+  await ensureDeepseekChatPage(page);
+}
 
 /** Inject text into DeepSeek chat input (React-compatible value setter). */
 function fillInputScript(text: string): string {
@@ -249,13 +288,54 @@ export const referencesCommand = cli({
     { name: 'text', required: true, positional: true, help: 'Question to ask DeepSeek' },
     { name: 'timeout', required: false, help: 'Max seconds to wait (default: 300)', default: '300' },
     { name: 'output', required: false, help: 'Save result to file (e.g. my-query.json)' },
+    { name: 'reuse', required: false, help: 'Reuse last conversation (default: false)', default: 'false' },
+    { name: 'chat-id', required: false, help: 'Specific chat ID to use (overrides --reuse)' },
+    { name: 'account', required: false, help: 'Account name for multi-account isolation' },
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
     const question = kwargs.text as string;
     const timeout = parseInt(kwargs.timeout as string, 10) || 300;
+    const reuse = kwargs.reuse === 'true' || kwargs.reuse === true;
+    const chatId = kwargs['chat-id'] as string | undefined;
+const accountName = (kwargs.account as string | undefined)?.trim() || undefined;
 
-    await ensureDeepseekChatPage(page);
+    // Resolve account (creates entry if needed, updates lastUsed) — separate from load/save
+    resolveDeepseekAccount(accountName);
+
+// Handle reuse: load last chat ID from storage
+    if (reuse) {
+      const lastChatId = loadDeepseekLastChatId(accountName);
+      if (lastChatId) {
+        const targetUrl = `https://chat.deepseek.com/a/chat/s/${lastChatId}`;
+        await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
+        await page.wait(5);
+        const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+        if (currentUrl?.includes(lastChatId)) {
+          console.error(`📌 Reusing last chat: ${lastChatId}`);
+        } else {
+          clearDeepseekLastChatId(accountName);
+          console.error(`⚠️ Last chat ${lastChatId} not found, cleared cache`);
+          await ensureDeepseekChatPage(page);
+        }
+      } else {
+        console.error('ℹ️ No saved chat found, using default flow');
+        await ensureDeepseekChatPage(page);
+      }
+    } else if (chatId) {
+      const targetUrl = `https://chat.deepseek.com/a/chat/s/${chatId}`;
+      await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
+      await page.wait(5);
+      const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+      if (currentUrl?.includes(chatId)) {
+        console.error(`📌 Using specified chat: ${chatId}`);
+      } else {
+        console.error(`⚠️ Chat ${chatId} not found, falling back to chat home`);
+        await ensureDeepseekChatPage(page);
+      }
+    } else {
+      await ensureDeepseekChatPage(page);
+    }
     await page.wait(1);
 
     // Snapshot answer before sending
@@ -353,6 +433,13 @@ export const referencesCommand = cli({
     const filePath = outPath ? join(saveDir, outPath) : join(saveDir, `deepseek-${timestamp}.json`);
     writeFileSync(filePath, JSON.stringify(result, null, 2), 'utf-8');
     console.error(`💾 Saved to ${filePath}`);
+
+    // Save current chat ID for future reuse
+    const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+    const id = extractDeepseekChatId(currentUrl || '');
+    if (id) {
+      saveDeepseekLastChatId(id, accountName);
+    }
 
     return result;
   },
