@@ -52,17 +52,17 @@ PROFILES_DIR = Path.home() / ".opencli" / "profiles"
 
 
 def get_doubao_accounts():
-    """从 doubao.json 读取账号名列表"""
+    """从 doubao.json 读取账号名列表（排除 default）"""
     try:
         if ACCOUNTS_FILE.exists():
             data = json.loads(ACCOUNTS_FILE.read_text(encoding="utf-8"))
             accounts = data.get("accounts", {})
             if isinstance(accounts, dict) and accounts:
-                return list(accounts.keys())
-        return ["default"]
+                return [k for k in accounts.keys() if k != "default"]
+        return []
     except Exception as e:
-        log.warning("Failed to read doubao accounts: %s, using 'default'", e)
-        return ["default"]
+        log.warning("Failed to read doubao accounts: %s, using empty list", e)
+        return []
 
 # 每个 task_type 使用独立的状态文件，避免冲突
 def get_state_file(task_type):
@@ -244,7 +244,7 @@ def check_references_empty(result_data):
     return True
 
 
-def process_task(task, worker_id, account):
+def process_task(task, worker_id, account, task_type):
     task_id = task["id"]
     prompt = task.get("prompt", "")
     try:
@@ -274,6 +274,7 @@ def process_task(task, worker_id, account):
                 "status": "failed",
                 "result": result_data,
                 "workerId": worker_id,
+                "model": task_type,
             }
             success = False
         else:
@@ -283,6 +284,7 @@ def process_task(task, worker_id, account):
                 "status": "completed",
                 "result": result_data,
                 "workerId": worker_id,
+                "model": task_type,
             }
             success = True
 
@@ -374,7 +376,7 @@ def run_loop(worker_id, task_type, restart_after):
             
             report_start(task_id, worker_id)
 
-            success = process_task(task, worker_id, current_account)
+            success = process_task(task, worker_id, current_account, task_type)
 
             report_result(task_id, status=1 if success else 0, worker_id=worker_id)
 
