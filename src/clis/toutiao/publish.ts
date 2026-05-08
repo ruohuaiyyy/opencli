@@ -24,6 +24,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { marked } from 'marked';
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
 
@@ -398,7 +399,8 @@ cli({
   browser: true,
   args: [
     { name: 'title', required: true, help: '文章标题' },
-    { name: 'content', required: false, help: '文章正文' },
+    { name: 'content', required: false, help: '文章正文（与 --content-file 二选一）' },
+    { name: 'content-file', required: false, help: '从文件读取正文内容（优先于 --content）' },
     { name: 'images', required: false, help: '图片路径，逗号分隔（最多9张）' },
     { name: 'cover-image', required: false, help: '封面图片路径（与正文图片独立）' },
     { name: 'cover', required: false, help: '封面类型', choices: ['single', 'three', 'none', 'auto'], default: 'auto' },
@@ -408,7 +410,18 @@ cli({
     if (!page) throw new Error('Browser page required');
 
     const title = String(kwargs.title ?? '').trim();
-    const content = String(kwargs.content ?? '').trim();
+    let content: string;
+    if (kwargs['content-file']) {
+      const contentFilePath = path.resolve(String(kwargs['content-file']));
+      if (!fs.existsSync(contentFilePath)) {
+        throw new Error(`正文文件不存在: ${contentFilePath}`);
+      }
+      content = fs.readFileSync(contentFilePath, 'utf8').trim();
+    } else {
+      content = String(kwargs.content ?? '').trim();
+    }
+    // Convert markdown to HTML
+    const contentHtml = marked.parse(content) as string;
     const imagePaths: string[] = kwargs.images
       ? String(kwargs.images).split(',').map((s: string) => s.trim()).filter(Boolean)
       : [];
@@ -575,7 +588,7 @@ cli({
     // Simplified content fill - avoid clicking editor to prevent triggering React re-render
     const contentFilled = await page.evaluate(`
       () => {
-        const content = ${JSON.stringify(content)};
+        const contentHtml = ${JSON.stringify(contentHtml)};
         let editor = document.querySelector('.ProseMirror');
         if (!editor) {
           const els = document.querySelectorAll('[contenteditable="true"]');
@@ -592,15 +605,11 @@ cli({
         if (!editor) return false;
 
         editor.focus();
-        editor.innerHTML = '';
-        const p = document.createElement('p');
-        p.textContent = content;
-        editor.appendChild(p);
+        editor.innerHTML = contentHtml;
 
         const events = [
           new Event('input', { bubbles: true }),
           new Event('selectionchange', { bubbles: true }),
-          new CompositionEvent('compositionend', { bubbles: true, data: content }),
           new Event('change', { bubbles: true })
         ];
         events.forEach(e => editor.dispatchEvent(e));

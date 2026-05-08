@@ -11,8 +11,9 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
@@ -76,14 +77,23 @@ def report_result(task_id: str, status: int, worker_id: str) -> None:
 # ---------- Prompt Parsing ----------
 
 
-def parse_prompt(prompt: str) -> tuple[str, dict]:
+def get_temp_content_file() -> str:
+    """创建临时文件存储 content 内容，返回文件路径"""
+    temp_dir = Path.home() / ".opencli" / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return str(temp_dir / f"content_{uuid.uuid4().hex[:8]}.txt")
+
+
+def parse_prompt(prompt: str) -> Tuple[str, dict, list]:
     """
     从 prompt 中提取执行命令和回调配置。
-    返回 (command, callback_config)
+    返回 (command, callback_config, temp_files_to_cleanup)
     """
     # 提取末尾的 JSON 配置块（最后一个独立的 JSON 对象）
     json_match = re.search(r"\{[^{}]*\"type\"\s*:\s*\"[^\"]+\"[^{}]*\}", prompt)
     callback_config = {}
+    temp_files = []
+
     if json_match:
         try:
             callback_config = json.loads(json_match.group())
@@ -99,11 +109,41 @@ def parse_prompt(prompt: str) -> tuple[str, dict]:
     cmd_match = re.search(r"执行命令\s+(.*?)\s+生成结果文件", command_section, re.DOTALL)
     if cmd_match:
         command = cmd_match.group(1).strip()
+
+        # 提取 --content 参数的起始位置
+        content_start_match = re.search(r'--content\s+"', command)
+        if content_start_match:
+            content_start = content_start_match.end() - 1  # 定位到开始的引号
+
+            # 从后往前查找结束标记：" --cover 或 " 生成结果文件
+            # 使用贪婪匹配找到最后一个这样的模式
+            end_pattern = r'"\s+(?=--cover|\s*生成结果文件)'
+            end_match = re.search(end_pattern, command[content_start + 1:])
+
+            if end_match:
+                content_inner = command[content_start + 1: content_start + 1 + end_match.start()]
+
+                # 如果 content 有换行符，说明是多行内容，需要写入临时文件
+                if '\n' in content_inner:
+                    temp_file = get_temp_content_file()
+                    Path(temp_file).write_text(content_inner, encoding='utf-8')
+                    temp_files.append(temp_file)
+
+                    # 替换 --content "xxx" 为 --content-file "path"
+                    before_content = command[:content_start_match.start()]  # 去掉末尾空格
+                    after_content = command[content_start + 1 + end_match.start() + 1:]  # --cover none
+                    command = f'{before_content}--content-file "{temp_file}"{after_content}'
+                else:
+                    # 单行内容，保持原样（双引号不变）
+                    pass
+        else:
+            # 兜底：取分号前第一句
+            command = command.split(";")[0].split("；")[0].strip()
     else:
         # 兜底：取分号前第一句
         command = command_section.split(";")[0].split("；")[0].strip()
 
-    return command, callback_config
+    return command, callback_config, temp_files
 
 
 # ---------- Command Execution ----------
@@ -191,9 +231,10 @@ def process_task(task: dict, worker_id: str) -> bool:
     """处理单个任务，返回是否成功"""
     task_id = task["id"]
     prompt = task.get("prompt", "")
+    temp_files = []
 
     try:
-        command, callback_config = parse_prompt(prompt)
+        command, callback_config, temp_files = parse_prompt(prompt)
         log.info("Parsed command: %s", command)
         log.info("Callback config: %s", callback_config)
 
@@ -255,6 +296,13 @@ def process_task(task: dict, worker_id: str) -> bool:
     except Exception as e:
         log.error("Task processing failed: %s", str(e))
         return False
+    finally:
+        # 清理临时文件
+        for tf in temp_files:
+            try:
+                Path(tf).unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def check_references_empty(result_data) -> bool:
