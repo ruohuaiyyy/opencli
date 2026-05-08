@@ -466,37 +466,113 @@ cli({
     if (!titleFilled) throw new Error('无法填写标题');
     await page.wait({ time: 0.5 });
 
-    // Step 3: Select cover mode (radio button)
-    const targetCover = coverType === 'single' ? '单图' : coverType === 'three' ? '三图' : '无封面';
-
+    // Step 2.5: Hide blocking UI - use loop in case AI assistant auto-expands
+    // The AI assistant panel's overlay (.byte-drawer-mask) blocks clicks on the cover radio buttons
     await page.evaluate(`
       () => {
-        const targetText = ${JSON.stringify(targetCover)};
-        const labels = document.querySelectorAll('label.byte-radio');
-        for (const label of labels) {
-          if (!label || label.offsetParent === null) continue;
-          const text = (label.innerText || '').replace(/\\s+/g, ' ').trim();
-          if (text === targetText) {
-            label.click();
-            label.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            return;
-          }
-        }
+        const hideAll = () => {
+          const selectors = [
+            '.byte-drawer-mask',
+            '.byte-drawer-wrapper',           // ADD: drawer wrapper that intercepts clicks
+            '.ai-assistant.is-expand',
+            '.ai-assistant-drawer-wrapper',
+            '[class*="ai-assistant-drawer"]',
+            '[class*="drawer-mask"]'
+          ];
+          selectors.forEach(sel => {
+            document.querySelectorAll(sel).forEach(el => {
+              el.style.display = 'none';
+            });
+          });
+        };
+        hideAll();
+        // Retry after short delay in case AI assistant auto-expands
+        setTimeout(hideAll, 100);
+      }
+    `);
+    await page.wait({ time: 0.8 });
+
+// Step 3: Select cover mode (radio button)
+    // First scroll to make the label visible in viewport (same pattern as "预览并发布")
+    const coverIndexMap: Record<string, number> = {
+      'none': 3,
+      'single': 1,
+      'three': 2
+    };
+    const targetIndex = coverIndexMap[coverType] || 1;
+
+    // Scroll the label into view first
+    await page.evaluate(`
+      () => {
+        const label = document.querySelector('.article-cover-radio-group label.byte-radio:nth-of-type(${targetIndex})');
+        if (label) label.scrollIntoView({ behavior: 'instant', block: 'center' });
       }
     `);
     await page.wait({ time: 0.5 });
 
-    // Step 4: Fill content
-    await page.evaluate(`() => {
-      const editor = document.querySelector('.ProseMirror');
-      if (editor) editor.click();
-    }`);
-    await page.wait({ time: 0.5 });
-    await page.evaluate(`() => {
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    }`);
+    // Hide blockers and click using elementFromPoint
+    await page.evaluate(`
+      () => {
+        const selectors = [
+          '.byte-drawer-mask',
+          '.byte-drawer-wrapper',
+          '.ai-assistant.is-expand',
+          '.ai-assistant-drawer-wrapper',
+          '[class*="ai-assistant-drawer"]',
+          '[class*="drawer-mask"]'
+        ];
+        selectors.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => {
+            el.style.display = 'none';
+          });
+        });
+
+        const label = document.querySelector('.article-cover-radio-group label.byte-radio:nth-of-type(${targetIndex})');
+        if (!label) return;
+
+        const rect = label.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+
+        let target = document.elementFromPoint(x, y);
+        if (!target) target = label;
+
+        target.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        target.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+        target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+      }
+    `);
     await page.wait({ time: 0.5 });
 
+    // Step 4: Fill content - verify title first to ensure it wasn't cleared
+    // First check if title is still filled (封面点击可能触发表单重置)
+    const titleValue = await page.evaluate(`
+      () => {
+        const titleInput = document.querySelector('input[placeholder*="标题"], textarea[placeholder*="标题"]');
+        return titleInput ? titleInput.value : '';
+      }
+    `);
+    if (!titleValue || titleValue.length === 0) {
+      // Re-fill title if it was cleared
+      await page.evaluate(`
+        () => {
+          const title = ${JSON.stringify(title)};
+          const selectors = ['input[placeholder*="标题"]', 'textarea[placeholder*="标题"]'];
+          for (const sel of selectors) {
+            const el = document.querySelector(sel);
+            if (el && el.offsetParent !== null) {
+              el.focus();
+              el.value = title;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return;
+            }
+          }
+        }
+      `);
+    }
+
+    // Simplified content fill - avoid clicking editor to prevent triggering React re-render
     const contentFilled = await page.evaluate(`
       () => {
         const content = ${JSON.stringify(content)};
