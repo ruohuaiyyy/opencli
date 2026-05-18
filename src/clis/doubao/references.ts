@@ -9,11 +9,15 @@
  *   opencli doubao references "大同旅游景点推荐" -f json
  *   opencli doubao references "问题" --reuse          # 复用上次会话
  *   opencli doubao references "问题" --chat-id xxx   # 指定会话 ID
+ *   opencli doubao references --content-file ./question.txt  # 从文件读取问题
  */
+
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences } from './extract-references.js';
+import { extractDoubaoReferences, checkReferenceButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -120,7 +124,10 @@ function sendScript(): string {
   `;
 }
 
-/** Extract the latest AI answer text from the page. */
+/** Extract the latest AI answer text from the page.
+ *  NEW DOM structure (2026-05): Answer is in .flex.flex-col.gap-2.w-full header container
+ *  No more .flow-markdown-body, .search-item-transition-FAa3Ce, [data-testid*="receive_message"]
+ */
 function getAnswerScript(): string {
   return `
     (() => {
@@ -129,38 +136,48 @@ function getAnswerScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
-      // ===== Method A: 精准定位 AI 回答容器 =====
+      // ===== NEW: Header container approach (2026-05) =====
 
-      // Step 1: 新版消息结构 - [data-message-id] + .flow-markdown-body
+      // Step 1: Find the header container with .flex.flex-col.gap-2.w-full
+      // This contains the answer text and reference counts like "搜索 N 个关键词，参考 M 篇资料"
+      const headerContainer = document.querySelector('.flex.flex-col.gap-2.w-full');
+      if (headerContainer) {
+        // Get all text content minus the reference count line
+        const fullText = clean(headerContainer.innerText);
+        // Remove the "搜索 N 个关键词，参考 M 篇资料" line if present (it's metadata, not answer)
+        const answerText = fullText
+          .replace(/搜索\\s*\\d+\\s*个关键词，?/g, '')
+          .replace(/参考\\s*\\d+\s*篇资料，?/g, '')
+          .trim();
+        if (answerText.length >= 10) {
+          return answerText;
+        }
+        // If only reference line, try body as fallback below
+        if (answerText.length > 0 && answerText.length < 10) {
+          // Use body fallback below
+        } else if (answerText.length >= 10) {
+          return answerText;
+        }
+      }
+
+      // Step 2: Fallback - scan all [data-message-id] divs for the latest AI response
+      // AI messages have text content, user messages may be empty or just their question
       const messages = document.querySelectorAll('[data-message-id]');
       if (messages.length > 0) {
-        // 取最后一条消息
-        const lastMsg = messages[messages.length - 1];
-
-        // AI 回答有 .flow-markdown-body class，用户消息没有
-        const aiMarkdown = lastMsg.querySelector('.flow-markdown-body');
-        if (aiMarkdown) {
-          return clean(aiMarkdown.innerText);
-        }
-
-        // 如果最后一条是用户消息（无 markdown），向前找最近的 AI 回答
-        for (let i = messages.length - 2; i >= 0; i--) {
-          const markdown = messages[i].querySelector('.flow-markdown-body');
-          if (markdown) return clean(markdown.innerText);
+        // Iterate from the end (latest) backwards to find a message with substantive content
+        for (let i = messages.length - 1; i >= 0; i--) {
+          const msg = messages[i];
+          const text = clean(msg.innerText);
+          // Skip if only reference metadata or too short
+          if (text.length < 10) continue;
+          if (/^搜索\\s*\\d+\\s*个关键词/.test(text)) continue;
+          if (text === '参考 N 篇资料' || /^参考\\s*\\d+\\s*篇资料$/.test(text)) continue;
+          // Found substantive answer
+          return text;
         }
       }
 
-      // Step 2: 旧版 fallback - receive_message 容器
-      const oldMsg = document.querySelectorAll('[data-testid*="receive_message"], [class*="receive-message"]');
-      if (oldMsg.length > 0) {
-        const lastMsg = oldMsg[oldMsg.length - 1];
-        const textEl = lastMsg.querySelector(
-          '[data-testid="message_text_content"], [data-testid="message_content"], .flow-markdown-body'
-        );
-        if (textEl) return clean(textEl.innerText);
-      }
-
-      // Method B: fallback with layered exclusion
+      // Step 3: Legacy fallback - clone body, strip nav/aside/sidebar/chat-input
       const root = document.body.cloneNode(true);
       [
         'nav, aside',
@@ -186,7 +203,6 @@ function getAnswerScript(): string {
         .replace(/文件数量：[^\\n]*/g, '')
         .replace(/文件类型：[^\\n]*/g, '');
 
-      // Filter out remaining UI noise lines using regex patterns
       const stopPatterns = [
         /^豆包$/,
         /^新对话$/,
@@ -199,13 +215,14 @@ function getAnswerScript(): string {
         /^图像生成/,
         /^帮我写作/,
         /^AI 创作$/,
+        /^搜索\\s*\\d+\\s*个关键词/,
+        /^参考\\s*\\d+\\s*篇资料$/,
       ];
 
       const lines = text.split('\\n')
         .map(l => clean(l))
         .filter(l => l && l.length <= 400 && !stopPatterns.some(p => p.test(l)));
 
-      // Return the tail portion which typically contains the AI answer
       const tail = lines.slice(-30).join('\\n');
       return tail || clean(root.innerText || root.textContent || '');
     })()
@@ -229,13 +246,15 @@ function injectVisibilityOverride(): string {
   `;
 }
 
-/** Check if AI is still generating (streaming indicator). */
+/** Check if AI is still generating (streaming indicator).
+ *  NEW indicators (2026-05): No more [data-testid="indicator"]
+ *  Use text-based detection and class patterns.
+ */
 function isStreamingScript(): string {
   return `
     (() => {
-      // Check for streaming indicators: typing dots, indicator elements, or data-show-indicator
+      // Check for streaming indicators: typing dots, indicator elements, or class patterns
       const indicators = document.querySelectorAll(
-        '[data-testid="indicator"]',
         '[data-show-indicator="true"]',
         '[class*="loading"]',
         '[class*="typing"]',
@@ -248,6 +267,11 @@ function isStreamingScript(): string {
       // Check for "深度思考中" or "搜索中" text
       const allText = document.body.innerText || '';
       if (allText.includes('深度思考中') || allText.includes('搜索中') || allText.includes('正在搜索')) {
+        return true;
+      }
+
+      // NEW (2026-05): Check for "正在思考" or "思考中" (new labels)
+      if (allText.includes('正在思考') || allText.includes('思考中')) {
         return true;
       }
 
@@ -546,7 +570,8 @@ export const referencesCommand = cli({
   navigateBefore: false,
   timeoutSeconds: 300,
   args: [
-    { name: 'text', required: true, positional: true, help: 'Question to ask Doubao' },
+    { name: 'text', required: false, positional: true, help: 'Question to ask Doubao（与 --content-file 二选一）' },
+    { name: 'content-file', required: false, help: 'Read question from file（优先于 text）' },
     { name: 'timeout', required: false, help: 'Max seconds to wait (default: 300)', default: '300' },
     { name: 'output', required: false, help: 'Save result to file (e.g. my-trip.json)' },
     { name: 'reuse', required: false, help: 'Reuse last conversation (default: false)', default: 'false' },
@@ -556,7 +581,19 @@ export const referencesCommand = cli({
   ],
   columns: ['question', 'answer', 'references'],
   func: async (page: IPage, kwargs: any) => {
-    const question = kwargs.text as string;
+    let question: string;
+    if (kwargs['content-file']) {
+      const contentFilePath = path.resolve(String(kwargs['content-file']));
+      if (!fs.existsSync(contentFilePath)) {
+        throw new Error(`Question file not found: ${contentFilePath}`);
+      }
+      question = fs.readFileSync(contentFilePath, 'utf8').trim();
+    } else {
+      question = String(kwargs.text ?? '').trim();
+    }
+    if (!question) {
+      throw new Error('Question is required: provide text or --content-file');
+    }
     const timeout = parseInt(kwargs.timeout as string, 10) || 300;
     const reuse = kwargs.reuse === 'true' || kwargs.reuse === true;
     const chatId = kwargs['chat-id'] as string | undefined;
@@ -654,7 +691,6 @@ export const referencesCommand = cli({
     let contentGrowing = false;
     let hasPlaceholderText = false; // Track if we see placeholder like "找到 N 篇资料"
     let prevContentHash = '';
-    let prevNodeCount = 0;
 
     // Verify CDP session is fully established before starting the polling loop.
     // When Doubao is first opened, the CDP debugger attach needs a moment to stabilize.
@@ -724,19 +760,15 @@ export const referencesCommand = cli({
       if (answer.length === 0 && current.length < 20) continue;
 
       // Detect placeholder text indicating search is starting but not complete
-      if (current.match(/找到\s*\d+\s*篇资料/)) {
+      // NEW (2026-05): Matches "搜索 N 个关键词，参考 M 篇资料" or "找到 N 篇资料"
+      if (current.match(/搜索\s*\d+\s*个关键词，?参考\s*\d+\s*篇资料/) ||
+          current.match(/找到\s*\d+\s*篇资料/)) {
         hasPlaceholderText = true;
         streamingDetected = true; // Force longer wait
       }
 
       // Compute content hash for stability detection
       const contentHash = simpleHash(current);
-      const nodeCount = await safeEval(() => `
-        (() => {
-          const container = document.querySelector('.flow-markdown-body') || document.body;
-          return container.querySelectorAll('*').length;
-        })()
-      `) as number;
 
       // Detect content growth (text still being appended)
       // Lowered threshold from 5 to 2 characters for better streaming detection
@@ -747,7 +779,6 @@ export const referencesCommand = cli({
         prevAnswerLength = current.length;
         stableCount = 0;
         prevContentHash = contentHash;
-        prevNodeCount = nodeCount;
         continue;
       }
       prevAnswerLength = current.length;
@@ -766,12 +797,11 @@ export const referencesCommand = cli({
         prevAnswerLength = current.length;
         stableCount = 0;
         prevContentHash = contentHash;
-        prevNodeCount = nodeCount;
         continue;
       }
 
-      // Dual stability detection: content hash + DOM node count both stable
-      if (contentHash === prevContentHash && nodeCount === prevNodeCount) {
+      // Stability detection: content hash stable (removed nodeCount - .flow-markdown-body is失效)
+      if (contentHash === prevContentHash) {
         stableCount += 1;
       } else {
         answer = current;
@@ -779,7 +809,6 @@ export const referencesCommand = cli({
         stableCount = 0;
       }
       prevContentHash = contentHash;
-      prevNodeCount = nodeCount;
 
       // Always require at least 4 stable checks (8 seconds) before exiting
       const requiredStable = streamingDetected ? 4 : 3;
@@ -799,22 +828,10 @@ export const referencesCommand = cli({
     await page.wait(2);
 
     // Poll for reference button to appear (it can lag behind answer text by several seconds)
+    // Use the multi-strategy checkReferenceButton() from extract-references.ts
     let refBtnInfo = null;
     for (let i = 0; i < 8; i++) {
-      refBtnInfo = await safeEval(() => `
-        (() => {
-          const xpath = document.evaluate(
-            '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
-            document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-          );
-          const refBtn = xpath.singleNodeValue;
-          if (refBtn) {
-            return { found: true, text: refBtn.innerText?.trim() };
-          }
-          return { found: false };
-        })()
-      `) as { found: boolean; text?: string };
-
+      refBtnInfo = await checkReferenceButton(page) as { found: boolean; refCount?: number; method?: string; text?: string };
       if (refBtnInfo.found) break;
       await page.wait(1);
     }
@@ -855,22 +872,9 @@ saveDoubaoLastChatId(currentChatId, accountName);
       return result;
     }
 
-    // Click to expand the reference section
-    await safeEval(() => `
-      (() => {
-        const xpath = document.evaluate(
-          '//*[contains(text(), "参考") and contains(text(), "篇资料")]',
-          document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null
-        );
-        const refBtn = xpath.singleNodeValue;
-        if (refBtn) {
-          refBtn.click();
-        }
-      })()
-    `);
-
-    // Wait for lazy-loaded reference content to appear (click triggers API fetch)
-    await page.wait(3);
+    // Click to expand the reference section - use extractDoubaoReferences which handles clicking
+    // extractDoubaoReferences already clicks the button and extracts references
+    await page.wait(2);
 
     // Poll to ensure reference content is fully loaded
     let references = await extractDoubaoReferences(page);
@@ -878,7 +882,6 @@ saveDoubaoLastChatId(currentChatId, accountName);
     let retries = 0;
     while (references.length === 0 && retries < maxRetries) {
       await page.wait(2);
-      // Don't re-click (toggle behavior may close the panel), just wait and re-extract
       references = await extractDoubaoReferences(page);
       retries++;
     }
