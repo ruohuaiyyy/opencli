@@ -736,17 +736,20 @@ export const referencesCommand = cli({
     // FIXED: Uses findLast() to get the LATEST (most recent) reference button
     // In multi-turn conversations, multiple reference buttons exist. find() returns the first (oldest),
     // but we need the last one which belongs to the current answer.
+    // FIXED: Uses textContent instead of innerText to avoid visibility dependency.
+    // innerText returns empty for minimized/covered windows, causing false negatives.
     const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
       return await page.evaluate(`
         (function() {
           const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
           // Use findLast to get the most recent reference button (last in DOM order)
           const btn = spans.findLast(el => {
-            const text = el.innerText || '';
-            return /^参考\\s*\\d+\\s*篇资料$/.test(text.trim());
+            // Use textContent instead of innerText - innerText returns empty when window is minimized
+            const text = (el.textContent || el.innerText || '').trim();
+            return /^参考\\s*\\d+\\s*篇资料$/.test(text);
           });
           if (btn) {
-            const text = btn.innerText?.trim() || '';
+            const text = (btn.textContent || btn.innerText || '').trim();
             const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
             return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
           }

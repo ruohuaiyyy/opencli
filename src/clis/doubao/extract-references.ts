@@ -41,9 +41,10 @@ function checkReferenceButtonScript(): string {
 
       // Strategy 1: span with class containing "entry-btn-title" and exact text
       // FIXED: Use findLast to get the most recent reference button in multi-turn conversations
+      // FIXED: Use textContent instead of innerText - innerText returns empty when window is minimized/covered
       const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
       btn = spans.findLast(el => {
-        const text = (el.innerText || '').trim();
+        const text = (el.textContent || el.innerText || '').trim();
         return /^参考\\s*\\d+\\s*篇资料$/.test(text);
       });
       method = 'span-entry-btn-title';
@@ -52,7 +53,7 @@ function checkReferenceButtonScript(): string {
       if (!btn) {
         const buttons = Array.from(document.querySelectorAll('button[class*="entry-btn"]'));
         btn = buttons.findLast(el => {
-          const text = (el.innerText || '').trim();
+          const text = (el.textContent || el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
         method = 'button-entry-btn';
@@ -62,7 +63,7 @@ function checkReferenceButtonScript(): string {
       if (!btn) {
         const allSpans = Array.from(document.querySelectorAll('span'));
         btn = allSpans.findLast(el => {
-          const text = (el.innerText || '').trim();
+          const text = (el.textContent || el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
         method = 'span-exact-text';
@@ -72,7 +73,7 @@ function checkReferenceButtonScript(): string {
         return { found: false };
       }
 
-      const text = (btn.innerText || '').trim();
+      const text = (btn.textContent || btn.innerText || '').trim();
       const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
       const refCount = match ? parseInt(match[1], 10) : 0;
 
@@ -100,9 +101,10 @@ function clickReferenceButtonScript(): string {
 
       // Strategy 1: span with class containing "entry-btn-title" and exact text
       // FIXED: Use findLast to get the most recent reference button in multi-turn conversations
+      // FIXED: Use textContent instead of innerText - innerText returns empty when window is minimized/covered
       const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
       btn = spans.findLast(el => {
-        const text = (el.innerText || '').trim();
+        const text = (el.textContent || el.innerText || '').trim();
         return /^参考\\s*\\d+\\s*篇资料$/.test(text);
       });
 
@@ -110,7 +112,7 @@ function clickReferenceButtonScript(): string {
       if (!btn) {
         const buttons = Array.from(document.querySelectorAll('button[class*="entry-btn"]'));
         btn = buttons.findLast(el => {
-          const text = (el.innerText || '').trim();
+          const text = (el.textContent || el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
       }
@@ -119,7 +121,7 @@ function clickReferenceButtonScript(): string {
       if (!btn) {
         const allSpans = Array.from(document.querySelectorAll('span'));
         btn = allSpans.findLast(el => {
-          const text = (el.innerText || '').trim();
+          const text = (el.textContent || el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
       }
@@ -165,7 +167,11 @@ function extractInlineReferencesScript(): string {
         }
 
         // Parse full text to extract title, snippet, source, index
-        const fullText = (link.innerText || '').trim();
+        // FIXED: Use textContent as fallback when innerText is empty (minimized/covered window)
+        let fullText = (link.innerText || '').trim();
+        if (!fullText) {
+          fullText = (link.textContent || '').trim();
+        }
         const lines = fullText.split('\\n').map(l => l.trim()).filter(Boolean);
 
         if (lines.length === 0) return;
