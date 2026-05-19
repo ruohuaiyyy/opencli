@@ -720,6 +720,9 @@ export const referencesCommand = cli({
               if (text.length < 20) continue;
               if (/^搜索\\s*\\d+\\s*个关键词$/.test(text)) continue;
               if (/^参考\\s*\\d+\\s*篇资料$/.test(text)) continue;
+              // Skip if text matches the input area content (user message)
+              const inputEl = document.querySelector('textarea[data-testid="chat_input_input"], textarea[placeholder*="发消息"]');
+              if (inputEl && inputEl.value && text.trim() === inputEl.value.trim()) continue;
               // Found the AI response
               return text;
             }
@@ -763,9 +766,13 @@ export const referencesCommand = cli({
     const maxTotalTime = timeout * 1000; // convert to ms
     const startTime = Date.now();
 
+    // Track last time content was seen growing, to detect AI completion
+    let lastContentChangeTime = startTime;
+    const aiCompletionThreshold = 8000; // 8s of no content growth = AI likely done
+
     for (let i = 0; i < Math.ceil(maxTotalTime / pollInterval); i++) {
-      // Anti-throttling: refresh tab visibility every 6 seconds
-      if (i > 0 && i % 6 === 0 && currentTabIndex !== null) {
+      // Anti-throttling: refresh tab visibility every 15 seconds (reduced from 6s to avoid interrupting rendering)
+      if (i > 0 && i % 15 === 0 && currentTabIndex !== null) {
         const currentActiveTab = (await page.tabs().catch(() => []) as any[])
           .find((t: any) => t.active);
         const currentActiveIndex = currentActiveTab?.index;
@@ -791,22 +798,37 @@ export const referencesCommand = cli({
 
       // Check if content is still growing
       if (current.length > prevAnswerLength + 2) {
-        // Content still growing - reset stability counter
+        // Content still growing - reset stability counter and track change time
         stableCount = 0;
         answer = current;
         prevAnswerLength = current.length;
         prevContentHash = contentHash;
+        lastContentChangeTime = Date.now();
       } else if (contentHash === prevContentHash && current.length > 0) {
         // Content stable
         stableCount++;
         if (stableCount >= 3) {
-          // Content stable for 3 checks - we can capture answer even without ref button
+          // Content stable for 3 checks - capture answer
           if (!answer) answer = current;
         }
       } else if (current.length > 0) {
         answer = current;
         prevAnswerLength = current.length;
         prevContentHash = contentHash;
+        stableCount = 0;
+        lastContentChangeTime = Date.now();
+      }
+
+      // Exit early if AI appears to have completed response but no reference button exists
+      // This prevents 300s timeout when answer is ready but has no references
+      const elapsedSinceChange = Date.now() - lastContentChangeTime;
+      if (answer && answer.length > 10 && stableCount >= 3 && elapsedSinceChange >= aiCompletionThreshold) {
+        // Double-check: verify AI is not still streaming/thinking
+        const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
+        if (!isStreaming) {
+          break;
+        }
+        // Still streaming, reset stability to keep waiting
         stableCount = 0;
       }
 
