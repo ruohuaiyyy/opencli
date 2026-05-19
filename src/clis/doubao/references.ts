@@ -704,43 +704,47 @@ export const referencesCommand = cli({
     // Function to get answer directly from [data-message-id] - more reliable than header container
     const getAnswerFromMessage = async (): Promise<string> => {
       return await page.evaluate(`
-        const clean = (v) => (v || '')
-          .replace(/\\u00a0/g, ' ')
-          .replace(/\\n{3,}/g, '\\n\\n')
-          .trim();
+        (function() {
+          const clean = (v) => (v || '')
+            .replace(/\\u00a0/g, ' ')
+            .replace(/\\n{3,}/g, '\\n\\n')
+            .trim();
 
-        const messages = document.querySelectorAll('[data-message-id]');
-        if (messages.length > 0) {
-          // Iterate from the end (latest) backwards to find AI message with substantive content
-          for (let i = messages.length - 1; i >= 0; i--) {
-            const msg = messages[i];
-            const text = clean(msg.innerText || '');
-            // Skip user messages (just question) and metadata-only messages
-            if (text.length < 20) continue;
-            if (/^搜索\\s*\\d+\\s*个关键词$/.test(text)) continue;
-            if (/^参考\\s*\\d+\\s*篇资料$/.test(text)) continue;
-            // Found the AI response
-            return text;
+          const messages = document.querySelectorAll('[data-message-id]');
+          if (messages.length > 0) {
+            // Iterate from the end (latest) backwards to find AI message with substantive content
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const msg = messages[i];
+              const text = clean(msg.innerText || '');
+              // Skip user messages (just question) and metadata-only messages
+              if (text.length < 20) continue;
+              if (/^搜索\\s*\\d+\\s*个关键词$/.test(text)) continue;
+              if (/^参考\\s*\\d+\\s*篇资料$/.test(text)) continue;
+              // Found the AI response
+              return text;
+            }
           }
-        }
-        return '';
+          return '';
+        })()
       `) as string;
     };
 
     // Helper to check reference button - uses page.evaluate directly (not safeEval)
     const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
       return await page.evaluate(`
-        const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
-        const btn = spans.find(el => {
-          const text = el.innerText || '';
-          return /^参考\\s*\\d+\\s*篇资料$/.test(text.trim());
-        });
-        if (btn) {
-          const text = btn.innerText?.trim() || '';
-          const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
-          return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
-        }
-        return { found: false };
+        (function() {
+          const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
+          const btn = spans.find(el => {
+            const text = el.innerText || '';
+            return /^参考\\s*\\d+\\s*篇资料$/.test(text.trim());
+          });
+          if (btn) {
+            const text = btn.innerText?.trim() || '';
+            const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
+            return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
+          }
+          return { found: false };
+        })()
       `) as { found: boolean; refCount?: number };
     };
 
