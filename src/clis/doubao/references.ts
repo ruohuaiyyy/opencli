@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences, checkReferenceButton } from './extract-references.js';
+import { extractDoubaoReferences } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -681,28 +681,6 @@ export const referencesCommand = cli({
     // Wait 5 seconds before starting detection to allow initial response generation
     await page.wait(5);
 
-    // Poll for response completion with dual stability detection
-    const pollInterval = 2;
-    const maxPolls = Math.max(1, Math.ceil(timeout / pollInterval));
-    let answer = '';
-    let stableCount = 0;
-    let streamingDetected = false;
-    let prevAnswerLength = 0;
-    let contentGrowing = false;
-    let hasPlaceholderText = false; // Track if we see placeholder like "找到 N 篇资料"
-    let prevContentHash = '';
-
-    // Verify CDP session is fully established before starting the polling loop.
-    // When Doubao is first opened, the CDP debugger attach needs a moment to stabilize.
-    // Without this, page.evaluate() can throw "Detached while handling command" on the first
-    // few polls even when the tab is valid and loaded.
-    try {
-      await page.evaluate('document.readyState').catch(() => 'loading');
-      await page.wait(1); // Extra buffer for CDP session to fully attach
-    } catch {
-      // Ignore — we'll detect instability in the loop itself
-    }
-
     // Get current tab index for periodic refresh (anti-throttling)
     const rawTabs = await page.tabs().catch(() => []) as any[];
     const currentTabIndex = Array.isArray(rawTabs) && rawTabs.length > 0
@@ -710,133 +688,153 @@ export const referencesCommand = cli({
       : null;
 
     // Safe evaluate wrapper: if CDP detaches during a call, wait briefly and retry once.
-    // This handles the race condition where Doubao's SPA causes CDP to briefly drop
-    // during initial page load (especially on first open from cold start).
     const safeEval = async <T>(scriptFn: () => string): Promise<T> => {
       try {
         return await page.evaluate(scriptFn()) as T;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (msg.includes('Detached') || msg.includes('target navigated') || msg.includes('closed')) {
-          await page.wait(1.5); // Give CDP time to re-attach
+          await page.wait(1.5);
           return await page.evaluate(scriptFn()) as T;
         }
         throw err;
       }
     };
 
-    for (let i = 0; i < maxPolls; i++) {
-      // Anti-throttling: refresh tab visibility every 3 polls (~6 seconds)
-      // This prevents Chrome from suspending JS when window is covered/minimized
-      // Skip if already on the target tab to avoid unnecessary tab switch causing CDP detach
-      if (i > 0 && i % 3 === 0 && currentTabIndex !== null) {
+    // Function to get answer directly from [data-message-id] - more reliable than header container
+    const getAnswerFromMessage = async (): Promise<string> => {
+      return await page.evaluate(`
+        const clean = (v) => (v || '')
+          .replace(/\\u00a0/g, ' ')
+          .replace(/\\n{3,}/g, '\\n\\n')
+          .trim();
+
+        const messages = document.querySelectorAll('[data-message-id]');
+        if (messages.length > 0) {
+          // Iterate from the end (latest) backwards to find AI message with substantive content
+          for (let i = messages.length - 1; i >= 0; i--) {
+            const msg = messages[i];
+            const text = clean(msg.innerText || '');
+            // Skip user messages (just question) and metadata-only messages
+            if (text.length < 20) continue;
+            if (/^搜索\\s*\\d+\\s*个关键词$/.test(text)) continue;
+            if (/^参考\\s*\\d+\\s*篇资料$/.test(text)) continue;
+            // Found the AI response
+            return text;
+          }
+        }
+        return '';
+      `) as string;
+    };
+
+    // Helper to check reference button - uses page.evaluate directly (not safeEval)
+    const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
+      return await page.evaluate(`
+        const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
+        const btn = spans.find(el => {
+          const text = el.innerText || '';
+          return /^参考\\s*\\d+\\s*篇资料$/.test(text.trim());
+        });
+        if (btn) {
+          const text = btn.innerText?.trim() || '';
+          const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
+          return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
+        }
+        return { found: false };
+      `) as { found: boolean; refCount?: number };
+    };
+
+    // Polling state
+    let answer = '';
+    let stableCount = 0;
+    let prevAnswerLength = 0;
+    let prevContentHash = '';
+    let lastRefCheckTime = 0;
+    let refButtonFound = false;
+
+    // Polling loop: wait for reference button OR timeout
+    // Strategy: wait for reference button to appear (indicates AI completed response)
+    // If timeout reached, capture whatever answer we have
+    const pollInterval = 1; // Check every second
+    const maxTotalTime = timeout * 1000; // convert to ms
+    const startTime = Date.now();
+
+    for (let i = 0; i < Math.ceil(maxTotalTime / pollInterval); i++) {
+      // Anti-throttling: refresh tab visibility every 6 seconds
+      if (i > 0 && i % 6 === 0 && currentTabIndex !== null) {
         const currentActiveTab = (await page.tabs().catch(() => []) as any[])
           .find((t: any) => t.active);
         const currentActiveIndex = currentActiveTab?.index;
         if (currentActiveIndex !== currentTabIndex) {
           await page.selectTab(currentTabIndex).catch(() => {});
-          await page.wait(0.5); // Allow CDP session to stabilize after tab switch
-          await safeEval(injectVisibilityOverride);
+          await page.wait(0.5);
         }
       }
 
-      await page.wait(i === 0 ? 0 : pollInterval);
-      const current = await safeEval(getAnswerScript) as string;
+      // Check if reference button has appeared
+      const refBtnInfo = await checkRefButton();
 
-      if (!current || current === answerBefore) continue;
-
-      // ===== Content Quality Filter =====
-      // Skip early noise (footer/sidebar text captured before AI answer loads)
-      const noisePatterns = [
-        /^.{0,30}下载电脑版/,
-        /^.{0,30}请仔细甄别/,
-        /^.{0,50}内容由 (豆包|AI) 生成/,
-        /^.{0,30}在此处拖放/,
-      ];
-      const isLikelyNoise = noisePatterns.some(p => p.test(current.trim()));
-      if (isLikelyNoise && answer.length === 0) continue; // Skip if we don't have a valid answer yet
-
-      // Require minimum content length before accepting as valid answer
-      if (answer.length === 0 && current.length < 20) continue;
-
-      // Detect placeholder text indicating search is starting but not complete
-      // NEW (2026-05): Matches "搜索 N 个关键词，参考 M 篇资料" or "找到 N 篇资料"
-      if (current.match(/搜索\s*\d+\s*个关键词，?参考\s*\d+\s*篇资料/) ||
-          current.match(/找到\s*\d+\s*篇资料/)) {
-        hasPlaceholderText = true;
-        streamingDetected = true; // Force longer wait
+      if (refBtnInfo.found) {
+        refButtonFound = true;
+        // Reference button found - AI has completed. Get answer now.
+        answer = await getAnswerFromMessage();
+        break;
       }
 
-      // Compute content hash for stability detection
+      // Get current answer from message
+      const current = await getAnswerFromMessage();
       const contentHash = simpleHash(current);
 
-      // Detect content growth (text still being appended)
-      // Lowered threshold from 5 to 2 characters for better streaming detection
-      if (answer && current.length > prevAnswerLength + 2) {
-        contentGrowing = true;
-        streamingDetected = true;
+      // Check if content is still growing
+      if (current.length > prevAnswerLength + 2) {
+        // Content still growing - reset stability counter
+        stableCount = 0;
         answer = current;
         prevAnswerLength = current.length;
-        stableCount = 0;
         prevContentHash = contentHash;
-        continue;
-      }
-      prevAnswerLength = current.length;
-
-      // First time we see actual content - mark streaming as detected
-      // This ensures we require longer stability from the start
-      if (!streamingDetected && answer === '') {
-        streamingDetected = true;
-      }
-
-      // Check if AI is still streaming/generating
-      const isStreaming = await safeEval(isStreamingScript) as boolean;
-      if (isStreaming) {
-        streamingDetected = true;
+      } else if (contentHash === prevContentHash && current.length > 0) {
+        // Content stable
+        stableCount++;
+        if (stableCount >= 3) {
+          // Content stable for 3 checks - we can capture answer even without ref button
+          if (!answer) answer = current;
+        }
+      } else if (current.length > 0) {
         answer = current;
         prevAnswerLength = current.length;
-        stableCount = 0;
         prevContentHash = contentHash;
-        continue;
-      }
-
-      // Stability detection: content hash stable (removed nodeCount - .flow-markdown-body is失效)
-      if (contentHash === prevContentHash) {
-        stableCount += 1;
-      } else {
-        answer = current;
-        prevAnswerLength = current.length;
         stableCount = 0;
       }
-      prevContentHash = contentHash;
 
-      // Always require at least 4 stable checks (8 seconds) before exiting
-      const requiredStable = streamingDetected ? 4 : 3;
-      if (stableCount >= requiredStable) break;
+      // Check for timeout
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= maxTotalTime) {
+        // Timeout reached - capture whatever answer we have
+        if (!answer) answer = current;
+        break;
+      }
+
+      await page.wait(pollInterval);
     }
 
-    // Final confirmation wait: one more check to ensure content is truly complete
-    await page.wait(1.5);
-    const finalCheck = await safeEval(getAnswerScript) as string;
-    const finalStreaming = await safeEval(isStreamingScript) as boolean;
-    if (!finalStreaming && finalCheck && finalCheck !== answerBefore) {
-      answer = finalCheck;
+    // Final answer retrieval if not already captured
+    if (!answer) {
+      answer = await getAnswerFromMessage();
     }
 
-    // Expand reference sources section (click "参考 N 篇资料" button)
-    // Wait longer for the reference button to appear (it may be added to DOM after streaming ends)
+    // Click reference button to expand references (if found)
     await page.wait(2);
 
     // Poll for reference button to appear (it can lag behind answer text by several seconds)
-    // Use the multi-strategy checkReferenceButton() from extract-references.ts
     let refBtnInfo = null;
     for (let i = 0; i < 8; i++) {
-      refBtnInfo = await checkReferenceButton(page) as { found: boolean; refCount?: number; method?: string; text?: string };
+      refBtnInfo = await checkRefButton();
+
       if (refBtnInfo.found) break;
       await page.wait(1);
     }
 
-    // If no reference button exists, return empty immediately
+    // If no reference button exists, return answer only (no references)
     if (!refBtnInfo?.found) {
       const result = [{
         question,
@@ -845,7 +843,7 @@ export const referencesCommand = cli({
       }];
 
       // Save current chat ID for future reuse (account-aware)
-      const currentUrl = await safeEval(() => 'window.location.href') as string;
+      const currentUrl = await page.evaluate(`window.location.href`) as string;
       const currentChatId = extractChatId(currentUrl || '');
       if (currentChatId) {
 saveDoubaoLastChatId(currentChatId, accountName);
