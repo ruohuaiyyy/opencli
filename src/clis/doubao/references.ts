@@ -895,7 +895,7 @@ saveDoubaoLastChatId(currentChatId, accountName);
     }];
 
     // Save current chat ID for future reuse
-    const currentUrl = await safeEval(() => 'window.location.href') as string;
+    const currentUrl = await page.evaluate(`window.location.href`) as string;
     const currentChatId = extractChatId(currentUrl || '');
     if (currentChatId) {
       saveDoubaoLastChatId(currentChatId, accountName);

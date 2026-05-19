@@ -1,18 +1,20 @@
 /**
  * DOM extraction logic for Doubao web reference sources.
  *
- * UPDATED (2026-05-18):
- *   - References are INLINE in the answer content (NOT in a sidebar)
- *   - Each reference item: a.search-lIUYwC (link) + span.footer-citation-PN73AP (index)
- *   - The "参考 N 篇资料" button EXPANDS/COLLAPSES the inline references
- *   - When expanded: references are visible inline in the answer
- *   - When collapsed: references are hidden (display:none)
+ * UPDATED (2026-05-19):
+ *   - References are INLINE in the answer content (in a sidebar/panel)
+ *   - Each reference: a.search-lIUYwC with text = "title\nsnippet\nsource\nindex"
+ *   - The "参考 N 篇资料" button EXPANDS/COLLAPSES the references panel
+ *   - Index is the LAST LINE of the link text (not a separate element)
  *
  * DOM structure:
- *   div.search-item-transition-FAa3Ce (reference card)
- *     └─ a.search-lIUYwC (link with href=URL, text=title+snippet)
- *     └─ div.search-item-footer-b0INFL (footer with citation)
- *          └─ span.footer-citation-PN73AP (index number like "1", "2", etc.)
+ *   container (after clicking reference button)
+ *     └─ a.search-lIUYwC (link with href=URL)
+ *          └─ div.w-full (content container)
+ *               ├─ Title (first line)
+ *               ├─ Snippet (middle lines)
+ *               ├─ Source name (short line before index, e.g., "手机搜狐网")
+ *               └─ Index number (last line, e.g., "1")
  */
 
 import type { IPage } from '../../types.js';
@@ -136,9 +138,16 @@ function clickReferenceButtonScript(): string {
  * Each reference is structured as:
  *   a.search-lIUYwC (link element)
  *     - href = URL
- *     - innerText = title + snippet + source
- *   span.footer-citation-PN73AP (inside div.search-item-footer-b0INFL)
- *     - innerText = index number
+ *     - innerText = title + snippet + source + index (all on separate lines)
+ *
+ * Link text format:
+ *   "Title\nSnippet content...\nSourceName\nIndex"
+ *
+ * Example:
+ *   "端午游北京，古都底蕴与民俗风情一站式全攻略_故宫_长城_传统\n
+ *    一、端午限定·民俗体验不能错过...\n
+ *    手机搜狐网\n
+ *    1"
  */
 function extractInlineReferencesScript(): string {
   return `
@@ -146,30 +155,61 @@ function extractInlineReferencesScript(): string {
       const links = document.querySelectorAll('a.search-lIUYwC');
       const refs = [];
 
-      links.forEach((link) => {
+      links.forEach((link, idx) => {
         const href = (link.href || '').trim();
         // Skip invalid URLs
         if (!href || href.startsWith('javascript:') || href === '#' || !href.startsWith('http')) {
           return;
         }
 
-        // Get the index from the citation span sibling
-        const footer = link.querySelector('div.search-item-footer-b0INFL, [class*="search-item-footer"]');
-        let index = refs.length + 1;
-        if (footer) {
-          const citation = footer.querySelector('span.footer-citation-PN73AP, [class*="footer-citation"]');
-          if (citation) {
-            const idxText = (citation.innerText || '').trim();
-            const idxMatch = idxText.match(/^(\\d+)$/);
-            if (idxMatch) {
-              index = parseInt(idxMatch[1], 10);
-            }
+        // Parse full text to extract title, snippet, source, index
+        const fullText = (link.innerText || '').trim();
+        const lines = fullText.split('\\n').map(l => l.trim()).filter(Boolean);
+
+        if (lines.length === 0) return;
+
+        // Index is ALWAYS the last line (it's a number like "1", "2", etc.)
+        let index = idx + 1; // fallback
+        let source = '';
+        const lastLine = lines[lines.length - 1];
+        if (/^\\d+$/.test(lastLine)) {
+          index = parseInt(lastLine, 10);
+        }
+
+        // Title is the first line
+        const title = lines[0] || 'Untitled';
+
+        // Source is the second-to-last line (short text before index)
+        // Look backwards for the first line that is:
+        // - Not a URL
+        // - Not a number (index)
+        // - Short enough to be a source name (< 50 chars)
+        // - Starts with Chinese letter or ASCII letter (not punctuation)
+        for (let i = lines.length - 2; i >= 0; i--) {
+          const line = lines[i];
+          if (!line.startsWith('http') &&
+              !/^\\d+$/.test(line) &&
+              line.length < 50 &&
+              line.length > 0 &&
+              /^[\\u4e00-\\u9fa5a-zA-Z]/.test(line)) {
+            source = line;
+            break;
           }
         }
 
-        // Parse full text to extract title, snippet, source
-        const fullText = (link.innerText || '').trim();
-        const lines = fullText.split('\\n').map(l => l.trim()).filter(Boolean);
+        // Snippet is content between title and source
+        // Find position of source line, take everything between title and source
+        let snippet = '';
+        let sourceIdx = lines.indexOf(source);
+        if (sourceIdx <= 0) sourceIdx = lines.length - 1;
+
+        if (lines.length > 2 && sourceIdx > 1) {
+          // Get lines between title (index 0) and source (index sourceIdx)
+          snippet = lines.slice(1, sourceIdx).join(' ').substring(0, 300);
+        } else if (lines.length > 1) {
+          // Fallback: lines between first and last
+          snippet = lines.slice(1, lines.length - 1).join(' ').substring(0, 300);
+        }
 
         // Clean URL - remove tracking parameters
         const url = href
@@ -177,25 +217,6 @@ function extractInlineReferencesScript(): string {
           .replace(/&allianceid=\\d+/g, '')
           .replace(/&sid=\\d+/g, '')
           .replace(/\\?$/, '');
-
-        // Title is typically the first non-empty line
-        let title = lines[0] || 'Untitled';
-        let snippet = '';
-        let source = '';
-
-        // Find the last line that looks like a source (short, not a URL)
-        for (let i = lines.length - 1; i > 0; i--) {
-          const line = lines[i];
-          if (!line.startsWith('http') && line.length < 50 && !/^\\d+$/.test(line)) {
-            source = line;
-            break;
-          }
-        }
-
-        // Snippet is content between title and source
-        if (lines.length > 2) {
-          snippet = lines.slice(1, lines.length - 1).join(' ').substring(0, 300);
-        }
 
         refs.push({
           index,
@@ -217,7 +238,7 @@ function extractInlineReferencesScript(): string {
 }
 
 export async function extractDoubaoReferences(page: IPage): Promise<DoubaoReference[]> {
-  // First check if button exists and if refs are already visible
+  // First check if button exists and get its status
   const btnInfo = await page.evaluate(checkReferenceButtonScript()) as {
     found: boolean;
     refCount?: number;
@@ -225,18 +246,14 @@ export async function extractDoubaoReferences(page: IPage): Promise<DoubaoRefere
     refsVisible?: boolean;
   };
 
-  // If refs already visible, extract them directly
-  if (btnInfo.refsVisible) {
-    const refs = await page.evaluate(extractInlineReferencesScript()) as DoubaoReference[];
-    if (refs.length > 0) return refs;
-  }
-
   // If no button found, return empty
   if (!btnInfo.found) {
     return [];
   }
 
-  // Click the button to expand references
+  // Always click the button to ensure we get CURRENT answer's references
+  // If refs were already visible (from previous question), clicking toggles and refreshes
+  // If refs were hidden, clicking reveals them
   const clickResult = await page.evaluate(clickReferenceButtonScript()) as { clicked?: boolean; error?: string };
   if (!clickResult?.clicked) {
     return [];
