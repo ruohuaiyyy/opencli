@@ -40,8 +40,9 @@ function checkReferenceButtonScript(): string {
       let method = '';
 
       // Strategy 1: span with class containing "entry-btn-title" and exact text
+      // FIXED: Use findLast to get the most recent reference button in multi-turn conversations
       const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
-      btn = spans.find(el => {
+      btn = spans.findLast(el => {
         const text = (el.innerText || '').trim();
         return /^参考\\s*\\d+\\s*篇资料$/.test(text);
       });
@@ -50,7 +51,7 @@ function checkReferenceButtonScript(): string {
       // Strategy 2: button with class containing "entry-btn"
       if (!btn) {
         const buttons = Array.from(document.querySelectorAll('button[class*="entry-btn"]'));
-        btn = buttons.find(el => {
+        btn = buttons.findLast(el => {
           const text = (el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
@@ -60,7 +61,7 @@ function checkReferenceButtonScript(): string {
       // Strategy 3: Any span with exact text match
       if (!btn) {
         const allSpans = Array.from(document.querySelectorAll('span'));
-        btn = allSpans.find(el => {
+        btn = allSpans.findLast(el => {
           const text = (el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
@@ -98,8 +99,9 @@ function clickReferenceButtonScript(): string {
       let btn = null;
 
       // Strategy 1: span with class containing "entry-btn-title" and exact text
+      // FIXED: Use findLast to get the most recent reference button in multi-turn conversations
       const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
-      btn = spans.find(el => {
+      btn = spans.findLast(el => {
         const text = (el.innerText || '').trim();
         return /^参考\\s*\\d+\\s*篇资料$/.test(text);
       });
@@ -107,7 +109,7 @@ function clickReferenceButtonScript(): string {
       // Strategy 2: button with class containing "entry-btn"
       if (!btn) {
         const buttons = Array.from(document.querySelectorAll('button[class*="entry-btn"]'));
-        btn = buttons.find(el => {
+        btn = buttons.findLast(el => {
           const text = (el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });
@@ -116,7 +118,7 @@ function clickReferenceButtonScript(): string {
       // Strategy 3: Any span with exact text match
       if (!btn) {
         const allSpans = Array.from(document.querySelectorAll('span'));
-        btn = allSpans.find(el => {
+        btn = allSpans.findLast(el => {
           const text = (el.innerText || '').trim();
           return /^参考\\s*\\d+\\s*篇资料$/.test(text);
         });

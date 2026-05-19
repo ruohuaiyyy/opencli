@@ -733,11 +733,15 @@ export const referencesCommand = cli({
     };
 
     // Helper to check reference button - uses page.evaluate directly (not safeEval)
+    // FIXED: Uses findLast() to get the LATEST (most recent) reference button
+    // In multi-turn conversations, multiple reference buttons exist. find() returns the first (oldest),
+    // but we need the last one which belongs to the current answer.
     const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
       return await page.evaluate(`
         (function() {
           const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
-          const btn = spans.find(el => {
+          // Use findLast to get the most recent reference button (last in DOM order)
+          const btn = spans.findLast(el => {
             const text = el.innerText || '';
             return /^参考\\s*\\d+\\s*篇资料$/.test(text.trim());
           });
