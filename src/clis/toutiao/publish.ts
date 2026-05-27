@@ -27,6 +27,10 @@ import * as path from 'node:path';
 import { marked } from 'marked';
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
+import {
+  resolveToutiaoAccount,
+  saveToutiaoLastPublishTime,
+} from './account-config.js';
 
 const PUBLISH_URL = 'https://mp.toutiao.com/profile_v4/graphic/publish?from=toutiao_pc';
 const MAX_IMAGES = 9;
@@ -404,10 +408,17 @@ cli({
     { name: 'images', required: false, help: '图片路径，逗号分隔（最多9张）' },
     { name: 'cover-image', required: false, help: '封面图片路径（与正文图片独立）' },
     { name: 'cover', required: false, help: '封面类型', choices: ['single', 'three', 'none', 'auto'], default: 'auto' },
+    { name: 'account', required: false, help: '指定账号名称（多账号管理）' },
   ],
   columns: ['status', 'detail'],
   func: async (page: IPage | null, kwargs) => {
     if (!page) throw new Error('Browser page required');
+
+    // Resolve account name for multi-account support
+    const accountName = kwargs.account
+      ? String(kwargs.account).trim()
+      : undefined;
+    const resolvedAccount = resolveToutiaoAccount(accountName);
 
     const title = String(kwargs.title ?? '').trim();
     let content: string;
@@ -700,10 +711,13 @@ cli({
     const imageDetail = imageData.length > 0 ? `${imageData.length}张正文图片` : '无正文图片';
     const coverFileDetail = coverImageData ? `自定义封面` : '';
 
+    // Save publish timestamp for this account
+    saveToutiaoLastPublishTime(Date.now(), resolvedAccount);
+
     return [
       {
         status: '⚠️ 操作完成，请在浏览器中确认',
-        detail: `"${title.slice(0, 20)}${title.length > 20 ? '...' : ''}" · ${content.length}字 · ${coverDetail}${coverFileDetail ? ' · ' + coverFileDetail : ''} · ${imageDetail}`,
+        detail: `"${title.slice(0, 20)}${title.length > 20 ? '...' : ''}" · ${content.length}字 · ${coverDetail}${coverFileDetail ? ' · ' + coverFileDetail : ''} · ${imageDetail}${accountName ? ` · 账号: ${resolvedAccount}` : ''}`,
       },
     ];
   },

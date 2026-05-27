@@ -46,6 +46,10 @@ const NON_TITLE_LINES = new Set([
   '已发布', '定时发布', '定时发布中', '由文章生成', '审核中',
 ]);
 
+const NON_TITLE_PATTERNS = [
+  /^共\s+\d+\s*条内容$/,
+];
+
 /** Regex for the stats line: 展现 X 阅读 Y 点赞 Z 评论 W */
 const STATS_RE = /展现\s*([\d,]+)\s*阅读\s*([\d,]+)\s*点赞\s*([\d,]+)\s*评论\s*([\d,]*)/;
 
@@ -89,7 +93,10 @@ export function parseToutiaoArticlesText(text: string): Array<{
     // Scan backwards up to 3 lines for the title
     for (let back = 3; back >= 1; back--) {
       const prev = lines[i - back] || '';
-      if (!prev || prev.length >= 100 || /^\d+$/.test(prev) || NON_TITLE_LINES.has(prev)) continue;
+      if (!prev || prev.length < 2 || prev.length >= 100 || /^\d+$/.test(prev)) continue;
+      if (NON_TITLE_LINES.has(prev)) continue;
+      // Filter UI text like "共 N 条内容"
+      if (NON_TITLE_PATTERNS.some((p) => p.test(prev))) continue;
       title = prev;
       break;
     }
