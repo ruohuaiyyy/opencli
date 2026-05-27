@@ -1,7 +1,7 @@
 # Doubao References 功能实现详情
 
 > **文件路径**: `src/clis/doubao/references.ts` + `src/clis/doubao/extract-references.ts`
-> **更新时间**: 2026-05-19
+> **更新时间**: 2026-04-23
 
 ---
 
