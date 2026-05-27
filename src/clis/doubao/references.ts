@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton, snapshotReferenceCount, checkNewReferenceButton } from './extract-references.js';
+import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -656,10 +656,9 @@ export const referencesCommand = cli({
     // Small buffer to ensure React components are fully mounted
     await page.wait(0.5);
 
-    // Snapshot state before sending: message count and reference container count.
-    // This prevents matching stale data from previous turns in multi-conversation sessions.
+    // Snapshot state before sending (for answer change detection only).
+    // Reference detection now uses message order, not count comparison.
     const oldMessageCount = await page.evaluate(`(() => document.querySelectorAll('[data-message-id]').length)`) as number;
-    const oldRefCount = await snapshotReferenceCount(page);
 
     // Snapshot answer before sending
     const answerBefore = await page.evaluate(getAnswerScript()) as string;
@@ -737,20 +736,10 @@ export const referencesCommand = cli({
       `) as string;
     };
 
-    // Helper to check for a NEW reference button (one beyond the existing count).
-    // In multi-turn conversations, old containers already exist with their buttons.
-    // We must wait for a NEW container to appear from the current answer.
-    const checkRefButton = async (): Promise<{ found: boolean; refCount?: number; newContainerExists?: boolean }> => {
-      const newRefCount = await page.evaluate(
-        `(() => document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]').length)`
-      ) as number;
-
-      if (newRefCount <= oldRefCount) return { found: false, newContainerExists: false };
-
-      // New container exists - check if it has the reference button
-      const result = await checkNewReferenceButton(page, oldRefCount);
-
-      return { ...result, newContainerExists: true };
+    // Helper to check for a reference button in the newest message.
+    // Uses message order (newest is last [data-message-id]) - no count-based detection.
+    const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
+      return await checkReferenceButton(page);
     };
 
     // Polling state
@@ -759,18 +748,14 @@ export const referencesCommand = cli({
     let prevAnswerLength = 0;
     let prevContentHash = '';
     let lastRefCheckTime = 0;
-    let refButtonFound = false;
 
-    // Polling loop: wait for reference button OR timeout
-    // Strategy: wait for reference button to appear (indicates AI completed response)
-    // If timeout reached, capture whatever answer we have
+    // Polling loop: wait for answer content stability
     const pollInterval = 1; // Check every second
     const maxTotalTime = timeout * 1000; // convert to ms
     const startTime = Date.now();
 
     // Track last time content was seen growing, to detect AI completion
     let lastContentChangeTime = startTime;
-    const aiCompletionThreshold = 8000; // 8s of no content growth = AI likely done
 
     for (let i = 0; i < Math.ceil(maxTotalTime / pollInterval); i++) {
       // Anti-throttling: refresh tab visibility every 15 seconds (reduced from 6s to avoid interrupting rendering)
@@ -784,17 +769,9 @@ export const referencesCommand = cli({
         }
       }
 
-      // Check if a NEW reference button has appeared beyond the old count.
-      // In multi-turn conversations, we must NOT match old containers.
-      // NOTE: ref button appears BEFORE answer is complete - we only use it
-      // as a signal to start the post-answer stability check later.
-      const refBtnInfo = await checkRefButton();
-
-      if (refBtnInfo.found && refBtnInfo.newContainerExists) {
-        refButtonFound = true;
-        // Do NOT break here - the ref button can appear before AI finishes writing.
-        // We continue polling until content is stable.
-      }
+      // Note: ref button may appear before answer is complete.
+      // We continue polling until content is stable - the ref button
+      // will be in the newest [data-message-id] which is what we extract from.
 
       // Get current answer from message
       const current = await getAnswerFromMessage();
@@ -823,10 +800,7 @@ export const referencesCommand = cli({
         lastContentChangeTime = Date.now();
       }
 
-      // Exit on content stability:
-      // - Always wait 6s of no change before considering AI done.
-      // - Ref button appears BEFORE answer is complete (during streaming).
-      // - The ONLY signal of completion is content stability, NOT ref button presence.
+      // Exit on content stability: wait 6s of no change before considering AI done.
       const elapsedSinceChange = Date.now() - lastContentChangeTime;
       if (answer && answer.length > 10 && stableCount >= 3) {
         if (elapsedSinceChange >= 6000) {

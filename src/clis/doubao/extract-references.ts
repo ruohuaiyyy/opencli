@@ -21,49 +21,39 @@ export interface DoubaoReference {
 }
 
 /**
- * Count existing reference containers on the page.
- * Used as a snapshot BEFORE sending a new question.
- * In multi-turn conversations, this tells us how many old containers exist.
- */
-function countReferenceContainersScript(): string {
-  return `
-    (() => {
-      return document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]').length;
-    })()
-  `;
-}
-
-/**
- * Check if the LAST non-empty container has a reference button AND whether links are already visible.
- * Skips empty React artifact containers.
+ * Check if the LAST [data-message-id] has a reference button and whether links are visible.
+ * Uses DOM order = temporal order (newest message is last in DOM).
+ * This approach handles multi-turn conversations correctly regardless of container reuse.
  */
 function checkLastReferenceButtonScript(): string {
   return `
     (() => {
-      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      if (containers.length === 0) return { found: false };
+      const messages = document.querySelectorAll('[data-message-id]');
+      let latestBlock = null;
+      let latestMsgIndex = -1;
 
-      // Find the last non-empty container
-      let container = null;
-      for (let i = containers.length - 1; i >= 0; i--) {
-        const c = containers[i];
-        if (c.querySelector('a[href^="http"]') || c.innerHTML.trim().length > 500) {
-          container = c;
-          break;
-        }
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const block = msg.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+        if (!block) continue;
+        const btn = block.querySelector('.cursor-pointer');
+        if (!btn) continue;
+        const text = (btn.textContent || '').trim();
+        if (!text.includes('参考')) continue;
+        latestBlock = block;
+        latestMsgIndex = i;
+        break;
       }
-      if (!container) return { found: false };
 
-      const clickable = container.querySelector('.cursor-pointer');
-      if (!clickable) return { found: false };
+      if (!latestBlock) return { found: false };
 
-      const text = (clickable.textContent || '').trim();
-      if (!text.includes('参考')) return { found: false };
-
-      const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
-      // Check if links are already visible (panel already expanded)
-      const linksVisible = container.querySelectorAll('a[href^="http"]').length > 0;
-      return { found: true, refCount: match ? parseInt(match[1], 10) : 0, linksVisible };
+      const links = latestBlock.querySelectorAll('a[href^="http"]');
+      const refMatch = (latestBlock.querySelector('.cursor-pointer')?.textContent || '').trim().match(/参考\\s*(\\d+)\\s*篇资料/);
+      return {
+        found: true,
+        refCount: refMatch ? parseInt(refMatch[1], 10) : 0,
+        linksVisible: links.length > 0,
+      };
     })()
   `;
 }
@@ -99,44 +89,83 @@ function checkNewReferenceButtonScript(oldContainerCount: number): string {
 }
 
 /**
- * Click the LAST valid container's reference button.
- * Skips empty React artifact containers.
- * Uses unified selection: cursor-pointer + "参考" text + innerHTML > 500.
+ * Click the reference button in the LAST [data-message-id] that has one.
+ * Uses DOM order = temporal order to find the newest message's ref button.
  */
 function clickLastReferenceButtonScript(): string {
   return `
     (() => {
-      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      if (containers.length === 0) return { clicked: false, error: 'No containers found' };
+      const messages = document.querySelectorAll('[data-message-id]');
 
-      // Find the LAST valid container using unified criteria
-      let container = null;
-      for (let i = containers.length - 1; i >= 0; i--) {
-        const c = containers[i];
-        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 500) {
-          const btn = c.querySelector('.cursor-pointer');
-          const text = (btn?.textContent || '').trim();
-          if (text.includes('参考')) {
-            container = c;
-            break;
-          }
-        }
+      // Find the LAST message with a valid ref block
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const block = msg.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+        if (!block) continue;
+        const btn = block.querySelector('.cursor-pointer');
+        if (!btn) continue;
+        const text = (btn.textContent || '').trim();
+        if (!text.includes('参考')) continue;
+        btn.click();
+        return { clicked: true };
       }
-      if (!container) return { clicked: false, error: 'No valid container found' };
 
-      const clickable = container.querySelector('.cursor-pointer');
-      if (!clickable) return { clicked: false, error: 'Button not found on latest container' };
-
-      clickable.click();
-      return { clicked: true };
+      return { clicked: false, error: 'No valid ref button found' };
     })()
   `;
 }
 
 /**
- * Extract references from the LAST valid container with a reference button.
- * In multi-turn conversations, use querySelectorAll and take the last valid one.
- * Some containers may be empty React artifacts - skip those.
+ * Find the reference block inside the LAST [data-message-id] that has a ref button.
+ * Uses DOM order = temporal order (newest message is last in DOM).
+ * This handles multi-turn conversations correctly regardless of container reuse.
+ *
+ * DOM hierarchy:
+ *   [data-message-id]
+ *     └─ [data-plugin-identifier*="search_query_result_block"]
+ *           └─ .cursor-pointer (ref button)
+ *           └─ a[href^="http"] (reference links)
+ */
+function findLatestRefBlockScript(): string {
+  return `
+    (() => {
+      const messages = document.querySelectorAll('[data-message-id]');
+      let latestBlock = null;
+      let latestMsgIndex = -1;
+
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const block = msg.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+        if (!block) continue;
+        const btn = block.querySelector('.cursor-pointer');
+        if (!btn) continue;
+        const text = (btn.textContent || '').trim();
+        if (!text.includes('参考')) continue;
+        // Found a valid block - this is the newest because we iterate from the end
+        latestBlock = block;
+        latestMsgIndex = i;
+        break;
+      }
+
+      if (!latestBlock) return { found: false };
+
+      const links = latestBlock.querySelectorAll('a[href^="http"]');
+      const refMatch = (latestBlock.querySelector('.cursor-pointer')?.textContent || '').trim().match(/参考\\s*(\\d+)\\s*篇资料/);
+      return {
+        found: true,
+        msgIndex: latestMsgIndex,
+        linkCount: links.length,
+        refCount: refMatch ? parseInt(refMatch[1], 10) : 0,
+        linksVisible: links.length > 0,
+      };
+    })()
+  `;
+}
+
+/**
+ * Extract references from the LAST valid [data-message-id] container's ref block.
+ * Finds the newest message with a reference button, then extracts links from it.
+ * Uses DOM order = temporal order, so newest answer is always correct.
  *
  * DOM structure (verified 2026-05-27):
  *   a[href]
@@ -146,22 +175,22 @@ function clickLastReferenceButtonScript(): string {
 function extractLastReferencesScript(): string {
   return `
     (() => {
-      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      if (containers.length === 0) return [];
-
-      // Find the LAST valid container using unified criteria
+      const messages = document.querySelectorAll('[data-message-id]');
       let container = null;
-      for (let i = containers.length - 1; i >= 0; i--) {
-        const c = containers[i];
-        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 500) {
-          const btn = c.querySelector('.cursor-pointer');
-          const text = (btn?.textContent || '').trim();
-          if (text.includes('参考')) {
-            container = c;
-            break;
-          }
-        }
+
+      // Find the LAST [data-message-id] that has a valid ref block
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const block = msg.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+        if (!block) continue;
+        const btn = block.querySelector('.cursor-pointer');
+        if (!btn) continue;
+        const text = (btn.textContent || '').trim();
+        if (!text.includes('参考')) continue;
+        container = block;
+        break;
       }
+
       if (!container) return [];
 
       const links = container.querySelectorAll('a[href^="http"]');
@@ -233,20 +262,17 @@ function extractLastReferencesScript(): string {
 }
 
 /**
- * Smart extraction: check if links are already visible before clicking.
- * The ref button is a toggle — if already expanded, clicking will COLLAPSE it
- * and destroy the links we need.
+ * Smart extraction: find the newest message's ref block, check if links are visible.
+ * The ref button is a toggle — if already expanded, clicking will COLLAPSE it.
  *
  * Flow:
- * 1. Find the last valid container with a ref button
+ * 1. Find the last [data-message-id] with a ref button (newest answer)
  * 2. Check if links are ALREADY visible (expanded state)
  * 3. If not, click to expand, then wait for React to render
- * 4. Extract references from DOM
- *
- * Uses unified container selection: cursor-pointer + "参考" text + innerHTML > 500.
+ * 4. Extract references from that block
  */
 export async function extractDoubaoReferences(page: IPage): Promise<DoubaoReference[]> {
-  // Check if ref button exists
+  // Check if ref button exists in the newest message
   const btnInfo = await page.evaluate(
     checkLastReferenceButtonScript()
   ) as { found: boolean; refCount?: number; linksVisible?: boolean };
@@ -255,43 +281,19 @@ export async function extractDoubaoReferences(page: IPage): Promise<DoubaoRefere
     return [];
   }
 
-  // Check if links are ALREADY visible (no click needed)
-  const preCheck = await page.evaluate(`
-    (() => {
-      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      for (let i = containers.length - 1; i >= 0; i--) {
-        const c = containers[i];
-        if (c.innerHTML.trim().length > 500 && c.querySelector('.cursor-pointer')) {
-          const btn = c.querySelector('.cursor-pointer');
-          const text = (btn?.textContent || '').trim();
-          if (text.includes('参考')) {
-            const links = c.querySelectorAll('a[href^="http"]');
-            return { linksAlreadyVisible: links.length > 0, linkCount: links.length };
-          }
-        }
-      }
-      return { linksAlreadyVisible: false, linkCount: 0 };
-    })()
-  `) as { linksAlreadyVisible: boolean; linkCount: number };
-
-  // Only click if links are NOT already visible
-  if (!preCheck.linksAlreadyVisible) {
+  // If links already visible, no click needed
+  if (!btnInfo.linksVisible) {
     const clickResult = await page.evaluate(clickLastReferenceButtonScript()) as { clicked?: boolean; error?: string };
     if (!clickResult?.clicked) {
       return [];
     }
-    // Wait LONGER for React to render the expanded reference list
-    // DouBao's animation + React hydration takes ~1-2 seconds
     await page.wait(3);
   } else {
-    // Links already visible, small wait for DOM stability
     await page.wait(1);
   }
 
-  // Extract from DOM
   const refs = await page.evaluate(extractLastReferencesScript()) as DoubaoReference[];
 
-  // Retry if empty (could be slow rendering)
   if (refs.length === 0) {
     for (let i = 0; i < 3; i++) {
       await page.wait(2);
@@ -319,69 +321,30 @@ export async function checkReferenceButton(page: IPage): Promise<{ found: boolea
 }
 
 /**
- * Check if a NEW reference button exists beyond the old container count.
- * In multi-turn conversations, this prevents matching stale buttons.
- */
-export async function checkNewReferenceButton(page: IPage, oldContainerCount: number): Promise<{ found: boolean; refCount?: number }> {
-  const result = await page.evaluate(
-    checkNewReferenceButtonScript(oldContainerCount)
-  ) as {
-    found: boolean;
-    refCount?: number;
-  };
-  return { found: result.found, refCount: result.refCount };
-}
-
-/**
- * Get the count of existing valid reference containers BEFORE sending a new question.
- * Only counts non-empty containers that have a button.
- * This snapshot is used to detect when a NEW container appears.
- */
-export async function snapshotReferenceCount(page: IPage): Promise<number> {
-  return await page.evaluate(`
-    (() => {
-      const all = document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]');
-      return Array.from(all).filter(c => {
-        const btn = c.querySelector('.cursor-pointer');
-        if (!btn) return false;
-        const text = (btn.textContent || '').trim();
-        return text.includes('参考') && c.innerHTML.trim().length > 500;
-      }).length;
-    })()
-  `) as number;
-}
-
-/**
- * Extract search keywords from the LAST (newest) container in the expanded search_query_result_block.
- * After clicking the reference button, keywords appear in a div with
- * class "mb-8 text-sm text-dbx-neutral-400" inside the container.
- * Format: "keyword1"、"keyword2"、"keyword3"
- *
- * Must be called AFTER clicking the reference button to expand the section.
- * Uses unified container selection: cursor-pointer + "参考" text + innerHTML > 500.
+ * Extract search keywords from the LAST [data-message-id] container's ref block.
+ * Uses DOM order = temporal order to find the newest message's keyword div.
  */
 function extractLastKeywordsScript(): string {
   return `
     (() => {
-      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      if (containers.length === 0) return [];
+      const messages = document.querySelectorAll('[data-message-id]');
+      let latestBlock = null;
 
-      // Find the LAST valid container using unified criteria
-      let container = null;
-      for (let i = containers.length - 1; i >= 0; i--) {
-        const c = containers[i];
-        if (c.innerHTML.trim().length > 500 && c.querySelector('.cursor-pointer')) {
-          const btn = c.querySelector('.cursor-pointer');
-          const text = (btn?.textContent || '').trim();
-          if (text.includes('参考')) {
-            container = c;
-            break;
-          }
-        }
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        const block = msg.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+        if (!block) continue;
+        const btn = block.querySelector('.cursor-pointer');
+        if (!btn) continue;
+        const text = (btn.textContent || '').trim();
+        if (!text.includes('参考')) continue;
+        latestBlock = block;
+        break;
       }
-      if (!container) return [];
 
-      const keywordDiv = container.querySelector('.mb-8.text-sm.text-dbx-neutral-400, .mb-8.text-dbx-neutral-400');
+      if (!latestBlock) return [];
+
+      const keywordDiv = latestBlock.querySelector('.mb-8.text-sm.text-dbx-neutral-400, .mb-8.text-dbx-neutral-400');
       if (!keywordDiv) return [];
 
       const rawText = (keywordDiv.textContent || '').trim();
