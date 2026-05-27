@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences, extractDoubaoKeywords, injectApiInterceptionScript, checkApiResults, checkReferenceButton as extractCheckRefButton } from './extract-references.js';
+import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -605,11 +605,6 @@ export const referencesCommand = cli({
 
     await ensureChatPage(page, { reuse, chatId, account: accountName });
 
-    // ===== API Interception: Hook fetch/XMLHttpRequest to capture search data =====
-    // Injects script to intercept API responses from /im/chain/single and stash search results.
-    await page.evaluate(injectApiInterceptionScript());
-    await page.wait(0.5); // Let interception setup settle
-
     // ===== Anti-throttling: Override Visibility API =====
     // Prevents Chrome background tab throttling from suspending Doubao's JS execution.
     // Without this: when window is covered/minimized, AI responses freeze until tab is visible.
@@ -737,19 +732,9 @@ export const referencesCommand = cli({
       `) as string;
     };
 
-    // Helper to check reference button - uses HYBRID API/DOM detection
-    // FIXED: Prioritizes API interception results for robustness.
-    // Fallback to NEW DOM structure: div[data-plugin-identifier*="search_query_result_block"]
+    // Helper to check reference button
     const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
-      // Plan A: Check intercepted API store
-      const apiReady = await checkApiResults(page);
-      if (apiReady) {
-        const results = await page.evaluate(`(() => window.__doubao_search_results || [])`) as any[];
-        return { found: true, refCount: results.length };
-      }
-
-      // Plan B: Check DOM
-      return await extractCheckRefButton(page);
+      return await checkReferenceButton(page);
     };
 
     // Polling state

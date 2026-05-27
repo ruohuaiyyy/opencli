@@ -1,15 +1,11 @@
 /**
- * Hybrid extraction logic for Doubao web reference sources.
+ * DOM extraction logic for Doubao web reference sources.
  *
- * STRATEGY:
- * - Plan A (API Interception): Intercept responses from /im/chain/single to get full 
- *   data (title, url, sitename, summary) from JSON body. Most robust against UI changes.
- * - Plan B (DOM Fallback): Use JS extraction from the new DOM structure 
- *   (div[data-plugin-identifier*="search_query_result_block"]) to get title and URL only.
+ * Uses JS extraction from the DOM structure:
+ *   div[data-plugin-identifier*="search_query_result_block"]
  *
- * UPDATED (2026-05-26):
- *   - Old DOM structure (a.search-lIUYwC) is gone.
- *   - New DOM structure uses a container div with plugin identifier.
+ * UPDATED (2026-05-27):
+ *   - API interception removed, pure DOM extraction only.
  */
 
 import type { IPage } from '../../types.js';
@@ -23,271 +19,17 @@ export interface DoubaoReference {
 }
 
 /**
- * Inject state scanner: searches all reachable JavaScript state in the page
- * for search query result data (block_type 10025 / search_query_result_block).
+ * Check if reference button exists in the DOM structure.
  *
- * Why not monkey-patch fetch/XHR/WebSocket?
- * Doubao uses a Service Worker for network requests, which bypasses all
- * window-level monkey-patching. The data IS somewhere in the page's JS memory
- * (React state, Redux store, closure variables). This scanner brute-forces
- * common state locations.
- */
-export function injectApiInterceptionScript(): string {
-  return `
-    (() => {
-      if (window.__doubao_search_results) return;
-      window.__doubao_search_results = [];
-
-      const seen = new Set();
-
-      function extractSearchResults(raw) {
-        if (!raw || seen.has(raw)) return;
-        try { seen.add(raw); } catch {}
-
-        try {
-          // Direct match: doubao API response envelope
-          const messages = raw?.downlink_body?.pull_singe_chain_downlink_body?.messages || [];
-          for (const msg of messages) {
-            const blocks = msg.content_block || [];
-            for (const block of blocks) {
-              if (block.block_type === 10025) {
-                const searchData = block.content?.search_query_result_block;
-                if (searchData && searchData.results) {
-                  for (const r of searchData.results) {
-                    const tc = r.text_card;
-                    if (tc) {
-                      window.__doubao_search_results.push({
-                        index: parseInt(tc.index) || 0,
-                        title: tc.title || 'Untitled',
-                        url: tc.url || '',
-                        snippet: tc.summary || '',
-                        source: tc.sitename || '',
-                      });
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Also try flattened format (sometimes stored differently in state)
-          if (raw.search_query_result_block?.results) {
-            for (const r of raw.search_query_result_block.results) {
-              const tc = r.text_card;
-              if (tc) {
-                window.__doubao_search_results.push({
-                  index: parseInt(tc.index) || 0,
-                  title: tc.title || 'Untitled',
-                  url: tc.url || '',
-                  snippet: tc.summary || '',
-                  source: tc.sitename || '',
-                });
-              }
-            }
-          }
-        } catch {}
-      }
-
-      // 1. Scan window properties (global stores like React state, Redux, etc.)
-      function scanWindow() {
-        try {
-          const keys = Object.keys(window);
-          for (const key of keys) {
-            try {
-              const val = window[key];
-              if (!val || typeof val !== 'object') continue;
-              // Avoid massive objects (circular refs, DOM trees)
-              if (key === 'document' || key === 'location' || key === 'window' || key === 'top' || key === 'self') continue;
-
-              // Scan nested data stores
-              if (Array.isArray(val)) {
-                for (const item of val) extractSearchResults(item);
-              } else {
-                extractSearchResults(val);
-                // One level deeper
-                for (const subKey of Object.keys(val).slice(0, 50)) {
-                  try {
-                    const subVal = val[subKey];
-                    if (subVal && typeof subVal === 'object') extractSearchResults(subVal);
-                  } catch {}
-                }
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-
-      // 2. Scan React fiber tree for component state with search results
-      function scanReactFibers() {
-        try {
-          const rootEl = document.getElementById('root') || document.querySelector('#__next') || document.querySelector('#app');
-          if (!rootEl) return;
-          const key = Object.keys(rootEl).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-          if (!key) return;
-
-          function walkFiber(fiber, depth) {
-            if (!fiber || depth > 50) return;
-            // Check memoizedState (hooks state chain)
-            let state = fiber.memoizedState;
-            while (state) {
-              if (state.queue?.lastRenderedState) {
-                extractSearchResults(state.queue.lastRenderedState);
-              }
-              if (state.memoizedState) extractSearchResults(state.memoizedState);
-              state = state.next;
-            }
-            // Check pendingProps / memoizedProps
-            if (fiber.pendingProps) extractSearchResults(fiber.pendingProps);
-            if (fiber.memoizedProps && fiber.memoizedProps !== fiber.pendingProps) extractSearchResults(fiber.memoizedProps);
-            // Check stateNode for class components
-            if (fiber.stateNode && fiber.stateNode.state) extractSearchResults(fiber.stateNode.state);
-            // Traverse child and sibling
-            if (fiber.child) walkFiber(fiber.child, depth + 1);
-            if (fiber.sibling) walkFiber(fiber.sibling, depth + 1);
-          }
-
-          walkFiber(rootEl[key], 0);
-        } catch {}
-      }
-
-      // 3. Scan redux/devtools stores
-      function scanRedux() {
-        try {
-          // Redux store
-          if (window.__REDUX_DEVTOOLS_EXTENSION_COMPOSE__) {
-            // Redux stores are often accessible via React context
-          }
-          // Zustand / Pinia / other stores that expose getState
-          try {
-            const zustandKeys = Object.keys(window).filter(k => k.startsWith('zustand') || k.includes('store') || k.includes('Store'));
-            for (const key of zustandKeys) {
-              const store = window[key];
-              if (store?.getState) extractSearchResults(store.getState());
-              if (store?.state) extractSearchResults(store.state);
-            }
-          } catch {}
-        } catch {}
-      }
-
-      // 4. Scan Promise state (pending fetch responses in memory)
-      function scanPromises() {
-        try {
-          // Not directly accessible, skip
-        } catch {}
-      }
-
-      // 5. Periodically re-scan (new data arrives after send)
-      function scheduleScan() {
-        try {
-          scanWindow();
-          scanReactFibers();
-          scanRedux();
-        } catch {}
-      }
-
-      // Initial scan
-      scheduleScan();
-
-      // Re-scan periodically (every 2s for 30s max)
-      let scanCount = 0;
-      const scanInterval = setInterval(function() {
-        scanCount++;
-        if (scanCount > 15) { clearInterval(scanInterval); return; }
-        scheduleScan();
-      }, 2000);
-    })()
-  `;
-}
-
-/**
- * Get search results from the intercepted API store.
- */
-function getInterceptedResultsScript(): string {
-  return `
-    (() => {
-      const results = window.__doubao_search_results || [];
-      if (results.length === 0) return [];
-
-      // Sort by index and deduplicate
-      const sorted = results.sort((a, b) => a.index - b.index);
-      const unique = [];
-      const seen = new Set();
-      for (const r of sorted) {
-        const key = r.url;
-        if (!seen.has(key) && r.url) {
-          seen.add(key);
-          unique.push(r);
-        }
-      }
-      return unique;
-    })()
-  `;
-}
-
-/**
- * Check if API results are available.
- */
-export async function checkApiResults(page: IPage): Promise<boolean> {
-  const results = await page.evaluate(getInterceptedResultsScript()) as any[];
-  return results && results.length > 0;
-}
-
-/**
- * Extract from intercepted API results (helper that takes raw results array)
- * Handles both:
- * - Simplified format (already scanned: {index, title, url, snippet, source})
- * - Raw format (straight from API: {text_card: {index, title, url, summary, sitename}})
- */
-export function extractFromApiResultsArray(results: any[]): DoubaoReference[] {
-  return results.map((r) => {
-    // Already in simplified format (from state scanner)
-    if (r && typeof r.index === 'number' && r.title && r.url) {
-      return {
-        index: r.index,
-        title: r.title,
-        url: r.url,
-        snippet: r.snippet || '',
-        source: r.source || '',
-      };
-    }
-
-    // Raw format from API (text_card wrapper)
-    const tc = r.text_card;
-    if (!tc) {
-      return null;
-    }
-    return {
-      index: parseInt(tc.index) || 0,
-      title: tc.title || 'Untitled',
-      url: tc.url || '',
-      snippet: tc.summary || '',
-      source: tc.sitename || '',
-    };
-  }).filter((ref): ref is DoubaoReference => ref !== null);
-}
-
-/**
- * Extract from intercepted API results
- */
-export async function extractFromApiResults(page: IPage): Promise<DoubaoReference[]> {
-  const results = await page.evaluate(getInterceptedResultsScript()) as any[];
-  return extractFromApiResultsArray(results);
-}
-
-/**
- * Check if reference button exists in the NEW DOM structure.
- *
- * New DOM: div[data-plugin-identifier*="search_query_result_block"]
+ * DOM: div[data-plugin-identifier*="search_query_result_block"]
  * The button is a div.cursor-pointer inside this container.
  */
-function checkNewReferenceButtonScript(): string {
+function checkReferenceButtonScript(): string {
   return `
     (() => {
-      // Find the container
       const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
       if (!container) return { found: false };
 
-      // Find the clickable element with "参考" text
       const clickable = container.querySelector('.cursor-pointer');
       if (!clickable) return { found: false };
 
@@ -301,9 +43,9 @@ function checkNewReferenceButtonScript(): string {
 }
 
 /**
- * Click the reference button in the NEW DOM structure to expand the list.
+ * Click the reference button to expand the list.
  */
-function clickNewReferenceButtonScript(): string {
+function clickReferenceButtonScript(): string {
   return `
     (() => {
       const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
@@ -319,7 +61,7 @@ function clickNewReferenceButtonScript(): string {
 }
 
 /**
- * Extract references from the NEW DOM structure (Fallback Plan B).
+ * Extract references from the DOM structure.
  *
  * Structure:
  *   div[data-plugin-identifier*="search_query_result_block"]
@@ -328,7 +70,7 @@ function clickNewReferenceButtonScript(): string {
  *               ├─ span (index like "1.")
  *               └─ div (title)
  */
-function extractNewDomReferencesScript(): string {
+function extractReferencesScript(): string {
   return `
     (() => {
       const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
@@ -379,63 +121,48 @@ function extractNewDomReferencesScript(): string {
 }
 
 /**
- * Main extraction function: Hybrid approach.
- * 1. Try API results first (full data).
- * 2. Fallback to DOM extraction (title + url only).
+ * Main extraction function: pure DOM extraction.
+ * 1. Find and click the reference button to expand.
+ * 2. Extract references from the expanded DOM.
  */
 export async function extractDoubaoReferences(page: IPage): Promise<DoubaoReference[]> {
-   // Check API results first
-   const results = await page.evaluate(`(() => window.__doubao_search_results || [])`) as any[];
-   if (results && results.length > 0) {
-     return extractFromApiResultsArray(results);
-   }
+  const btnInfo = await page.evaluate(checkReferenceButtonScript()) as { found: boolean };
 
-   // Fallback: DOM extraction
-   const btnInfo = await page.evaluate(checkNewReferenceButtonScript()) as { found: boolean };
-   
-   if (!btnInfo.found) {
-     return [];
-   }
-
-   // Click to expand references in DOM
-   const clickResult = await page.evaluate(clickNewReferenceButtonScript()) as { clicked?: boolean; error?: string };
-   if (!clickResult?.clicked) {
-     return [];
-   }
-
-   // Wait for expansion
-   await page.wait(2);
-
-   // Extract from DOM
-   const domRefs = await page.evaluate(extractNewDomReferencesScript()) as DoubaoReference[];
-
-   // Retry if empty
-   if (domRefs.length === 0) {
-     for (let i = 0; i < 3; i++) {
-       await page.wait(2);
-       const retryRefs = await page.evaluate(extractNewDomReferencesScript()) as DoubaoReference[];
-       if (retryRefs.length > 0) {
-         return retryRefs;
-       }
-     }
-   }
-
-   return domRefs;
- }
-
-/**
- * Check if reference button exists (Hybrid: API or DOM).
- * Prioritizes API detection but falls back to DOM check.
- */
-export async function checkReferenceButton(page: IPage): Promise<{ found: boolean; refCount?: number }> {
-  // Method 1: Check API
-  const apiResults = await page.evaluate(getInterceptedResultsScript()) as any[];
-  if (apiResults && apiResults.length > 0) {
-    return { found: true, refCount: apiResults.length };
+  if (!btnInfo.found) {
+    return [];
   }
 
-  // Method 2: Check DOM
-  const result = await page.evaluate(checkNewReferenceButtonScript()) as {
+  // Click to expand references
+  const clickResult = await page.evaluate(clickReferenceButtonScript()) as { clicked?: boolean; error?: string };
+  if (!clickResult?.clicked) {
+    return [];
+  }
+
+  // Wait for expansion
+  await page.wait(2);
+
+  // Extract from DOM
+  const refs = await page.evaluate(extractReferencesScript()) as DoubaoReference[];
+
+  // Retry if empty
+  if (refs.length === 0) {
+    for (let i = 0; i < 3; i++) {
+      await page.wait(2);
+      const retryRefs = await page.evaluate(extractReferencesScript()) as DoubaoReference[];
+      if (retryRefs.length > 0) {
+        return retryRefs;
+      }
+    }
+  }
+
+  return refs;
+}
+
+/**
+ * Check if reference button exists.
+ */
+export async function checkReferenceButton(page: IPage): Promise<{ found: boolean; refCount?: number }> {
+  const result = await page.evaluate(checkReferenceButtonScript()) as {
     found: boolean;
     refCount?: number;
   };
@@ -456,15 +183,12 @@ function extractKeywordsScript(): string {
       const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
       if (!container) return [];
 
-      // Keywords are in a div with text-dbx-neutral-400 class, before the references list
       const keywordDiv = container.querySelector('.mb-8.text-sm.text-dbx-neutral-400, .mb-8.text-dbx-neutral-400');
       if (!keywordDiv) return [];
 
       const rawText = (keywordDiv.textContent || '').trim();
       if (!rawText) return [];
 
-      // Parse keywords from format: "K1"、"K2"、"K3"
-      // Split by Chinese enumeration comma (\u3001) and clean up
       return rawText
         .split(/[\u3001，,]+/)
         .map(k => k.replace(/[""""]/g, '').trim())
