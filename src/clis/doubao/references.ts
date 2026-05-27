@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences } from './extract-references.js';
+import { extractDoubaoReferences, extractDoubaoKeywords, injectApiInterceptionScript, checkApiResults, checkReferenceButton as extractCheckRefButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -605,6 +605,11 @@ export const referencesCommand = cli({
 
     await ensureChatPage(page, { reuse, chatId, account: accountName });
 
+    // ===== API Interception: Hook fetch/XMLHttpRequest to capture search data =====
+    // Injects script to intercept API responses from /im/chain/single and stash search results.
+    await page.evaluate(injectApiInterceptionScript());
+    await page.wait(0.5); // Let interception setup settle
+
     // ===== Anti-throttling: Override Visibility API =====
     // Prevents Chrome background tab throttling from suspending Doubao's JS execution.
     // Without this: when window is covered/minimized, AI responses freeze until tab is visible.
@@ -732,30 +737,19 @@ export const referencesCommand = cli({
       `) as string;
     };
 
-    // Helper to check reference button - uses page.evaluate directly (not safeEval)
-    // FIXED: Uses findLast() to get the LATEST (most recent) reference button
-    // In multi-turn conversations, multiple reference buttons exist. find() returns the first (oldest),
-    // but we need the last one which belongs to the current answer.
-    // FIXED: Uses textContent instead of innerText to avoid visibility dependency.
-    // innerText returns empty for minimized/covered windows, causing false negatives.
+    // Helper to check reference button - uses HYBRID API/DOM detection
+    // FIXED: Prioritizes API interception results for robustness.
+    // Fallback to NEW DOM structure: div[data-plugin-identifier*="search_query_result_block"]
     const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
-      return await page.evaluate(`
-        (function() {
-          const spans = Array.from(document.querySelectorAll('span[class*="entry-btn-title"]'));
-          // Use findLast to get the most recent reference button (last in DOM order)
-          const btn = spans.findLast(el => {
-            // Use textContent instead of innerText - innerText returns empty when window is minimized
-            const text = (el.textContent || el.innerText || '').trim();
-            return /^参考\\s*\\d+\\s*篇资料$/.test(text);
-          });
-          if (btn) {
-            const text = (btn.textContent || btn.innerText || '').trim();
-            const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
-            return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
-          }
-          return { found: false };
-        })()
-      `) as { found: boolean; refCount?: number };
+      // Plan A: Check intercepted API store
+      const apiReady = await checkApiResults(page);
+      if (apiReady) {
+        const results = await page.evaluate(`(() => window.__doubao_search_results || [])`) as any[];
+        return { found: true, refCount: results.length };
+      }
+
+      // Plan B: Check DOM
+      return await extractCheckRefButton(page);
     };
 
     // Polling state
@@ -873,6 +867,7 @@ export const referencesCommand = cli({
         question,
         answer: answer || 'No response received within timeout.',
         references: [],
+        keywords: [],
       }];
 
       // Save current chat ID for future reuse (account-aware)
@@ -917,10 +912,14 @@ saveDoubaoLastChatId(currentChatId, accountName);
       retries++;
     }
 
+    // Extract search keywords from the expanded section
+    const keywords = await extractDoubaoKeywords(page);
+
     const result = [{
       question,
       answer: answer || 'No response received within timeout.',
       references,
+      keywords,
     }];
 
     // Save current chat ID for future reuse
