@@ -6,6 +6,8 @@
  *
  * UPDATED (2026-05-27):
  *   - API interception removed, pure DOM extraction only.
+ *   - Multi-turn support: extract from the LAST (newest) container to avoid
+ *     stale data from previous conversations.
  */
 
 import type { IPage } from '../../types.js';
@@ -19,15 +21,37 @@ export interface DoubaoReference {
 }
 
 /**
- * Check if reference button exists in the DOM structure.
- *
- * DOM: div[data-plugin-identifier*="search_query_result_block"]
- * The button is a div.cursor-pointer inside this container.
+ * Count existing reference containers on the page.
+ * Used as a snapshot BEFORE sending a new question.
+ * In multi-turn conversations, this tells us how many old containers exist.
  */
-function checkReferenceButtonScript(): string {
+function countReferenceContainersScript(): string {
   return `
     (() => {
-      const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+      return document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]').length;
+    })()
+  `;
+}
+
+/**
+ * Check if the LAST non-empty reference container has a reference button.
+ * Skips empty React artifact containers.
+ */
+function checkLastReferenceButtonScript(): string {
+  return `
+    (() => {
+      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      if (containers.length === 0) return { found: false };
+
+      // Find the last non-empty container
+      let container = null;
+      for (let i = containers.length - 1; i >= 0; i--) {
+        const c = containers[i];
+        if (c.innerHTML.trim().length > 0) {
+          container = c;
+          break;
+        }
+      }
       if (!container) return { found: false };
 
       const clickable = container.querySelector('.cursor-pointer');
@@ -43,16 +67,54 @@ function checkReferenceButtonScript(): string {
 }
 
 /**
- * Click the reference button to expand the list.
+ * Check if a NEW reference button exists beyond the old container count.
+ * In multi-turn conversations, wait for a NEW container to appear first.
+ * Only counts non-empty, valid containers.
  */
-function clickReferenceButtonScript(): string {
+function checkNewReferenceButtonScript(oldContainerCount: number): string {
   return `
     (() => {
-      const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
-      if (!container) return { clicked: false, error: 'Container not found' };
+      const allContainers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      // Only count non-empty containers as valid
+      const containers = allContainers.filter(c => c.innerHTML.trim().length > 0 && c.querySelector('.cursor-pointer'));
+      if (containers.length <= ${oldContainerCount}) return { found: false, containerCount: containers.length };
+
+      const container = containers[containers.length - 1];
+      const clickable = container.querySelector('.cursor-pointer');
+      if (!clickable) return { found: false, containerCount: containers.length };
+
+      const text = (clickable.textContent || '').trim();
+      if (!text.includes('参考')) return { found: false, containerCount: containers.length };
+
+      const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
+      return { found: true, refCount: match ? parseInt(match[1], 10) : 0, containerCount: containers.length };
+    })()
+  `;
+}
+
+/**
+ * Click the LAST non-empty container's reference button.
+ * Skips empty React artifact containers.
+ */
+function clickLastReferenceButtonScript(): string {
+  return `
+    (() => {
+      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      if (containers.length === 0) return { clicked: false, error: 'No containers found' };
+
+      // Find the LAST container with a reference button (skip empty artifacts)
+      let container = null;
+      for (let i = containers.length - 1; i >= 0; i--) {
+        const c = containers[i];
+        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 0) {
+          container = c;
+          break;
+        }
+      }
+      if (!container) return { clicked: false, error: 'No valid container found' };
 
       const clickable = container.querySelector('.cursor-pointer');
-      if (!clickable) return { clicked: false, error: 'Button not found' };
+      if (!clickable) return { clicked: false, error: 'Button not found on latest container' };
 
       clickable.click();
       return { clicked: true };
@@ -61,19 +123,30 @@ function clickReferenceButtonScript(): string {
 }
 
 /**
- * Extract references from the DOM structure.
+ * Extract references from the LAST non-empty container with a reference button.
+ * In multi-turn conversations, use querySelectorAll and take the last non-empty one.
+ * Some containers may be empty React artifacts - skip those.
  *
- * Structure:
- *   div[data-plugin-identifier*="search_query_result_block"]
- *     └─ div.container-SIvZXF (expanded list)
- *          └─ a[href^="http"]
- *               ├─ span (index like "1.")
- *               └─ div (title)
+ * DOM structure (verified 2026-05-27):
+ *   a[href]
+ *     ├─ SPAN → "1." (index number)
+ *     └─ DIV → "北京–>南昌列车信息查询" (title)
  */
-function extractReferencesScript(): string {
+function extractLastReferencesScript(): string {
   return `
     (() => {
-      const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      if (containers.length === 0) return [];
+
+      // Find the LAST container that has a reference button (not empty React artifacts)
+      let container = null;
+      for (let i = containers.length - 1; i >= 0; i--) {
+        const c = containers[i];
+        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 0) {
+          container = c;
+          break;
+        }
+      }
       if (!container) return [];
 
       const links = container.querySelectorAll('a[href^="http"]');
@@ -83,23 +156,30 @@ function extractReferencesScript(): string {
         const href = (link.href || '').trim();
         if (!href || !href.startsWith('http')) return;
 
-        // Extract index from span
+        // DOM structure: a > SPAN("1.") + DIV(title text)
         const indexSpan = link.querySelector('span');
-        let index = domIdx + 1; // fallback
+        const titleDiv = link.querySelector('div');
+
+        let index = domIdx + 1;
         if (indexSpan) {
-          const spanText = (indexSpan.textContent || '').trim().replace(/[^0-9]/g, '');
+          const spanText = (indexSpan.textContent || '').trim().replace(/\\D/g, '');
           if (spanText) index = parseInt(spanText, 10);
         }
 
-        // Extract title from the text div
-        const titleDiv = link.querySelector('div');
-        let title = (link.textContent || '').trim();
-        if (titleDiv) title = (titleDiv.textContent || '').trim();
+        // Get title from the DIV child (direct text, not from spans or other nested elements)
+        let title = '';
+        if (titleDiv) {
+          title = (titleDiv.textContent || '').trim();
+        }
 
-        // Remove the index prefix if present in title (e.g. "1. Title")
-        title = title.replace(/^\\d+\\.\\s*/, '').trim() || 'Untitled';
+        if (!title) {
+          // Fallback: use full text but strip leading number
+          title = (link.textContent || '').trim();
+          title = title.replace(/^\\d+\\.\\s*/, '').trim();
+        }
 
-        // Clean URL - remove tracking parameters
+        title = title || 'Untitled';
+
         const url = href
           .replace(/&hidePublishButton=true&hideTitle=true/g, '')
           .replace(/&allianceid=\\d+/g, '')
@@ -110,8 +190,8 @@ function extractReferencesScript(): string {
           index,
           title,
           url,
-          snippet: '', // Not available in DOM
-          source: '',  // Not available in DOM
+          snippet: '',
+          source: '',
         });
       });
 
@@ -121,19 +201,21 @@ function extractReferencesScript(): string {
 }
 
 /**
- * Main extraction function: pure DOM extraction.
- * 1. Find and click the reference button to expand.
- * 2. Extract references from the expanded DOM.
+ * Main extraction function: pure DOM extraction from the latest container.
+ * 1. Find and click the LAST reference button to expand.
+ * 2. Extract references from the expanded DOM (last container only).
  */
 export async function extractDoubaoReferences(page: IPage): Promise<DoubaoReference[]> {
-  const btnInfo = await page.evaluate(checkReferenceButtonScript()) as { found: boolean };
+  const btnInfo = await page.evaluate(
+    checkNewReferenceButtonScript(0)
+  ) as { found: boolean };
 
   if (!btnInfo.found) {
     return [];
   }
 
-  // Click to expand references
-  const clickResult = await page.evaluate(clickReferenceButtonScript()) as { clicked?: boolean; error?: string };
+  // Click to expand references (last container)
+  const clickResult = await page.evaluate(clickLastReferenceButtonScript()) as { clicked?: boolean; error?: string };
   if (!clickResult?.clicked) {
     return [];
   }
@@ -141,14 +223,14 @@ export async function extractDoubaoReferences(page: IPage): Promise<DoubaoRefere
   // Wait for expansion
   await page.wait(2);
 
-  // Extract from DOM
-  const refs = await page.evaluate(extractReferencesScript()) as DoubaoReference[];
+  // Extract from DOM (last container)
+  const refs = await page.evaluate(extractLastReferencesScript()) as DoubaoReference[];
 
   // Retry if empty
   if (refs.length === 0) {
     for (let i = 0; i < 3; i++) {
       await page.wait(2);
-      const retryRefs = await page.evaluate(extractReferencesScript()) as DoubaoReference[];
+      const retryRefs = await page.evaluate(extractLastReferencesScript()) as DoubaoReference[];
       if (retryRefs.length > 0) {
         return retryRefs;
       }
@@ -159,10 +241,12 @@ export async function extractDoubaoReferences(page: IPage): Promise<DoubaoRefere
 }
 
 /**
- * Check if reference button exists.
+ * Check if the LAST reference container has a reference button.
  */
 export async function checkReferenceButton(page: IPage): Promise<{ found: boolean; refCount?: number }> {
-  const result = await page.evaluate(checkReferenceButtonScript()) as {
+  const result = await page.evaluate(
+    checkLastReferenceButtonScript()
+  ) as {
     found: boolean;
     refCount?: number;
   };
@@ -170,17 +254,58 @@ export async function checkReferenceButton(page: IPage): Promise<{ found: boolea
 }
 
 /**
- * Extract search keywords from the expanded search_query_result_block.
+ * Check if a NEW reference button exists beyond the old container count.
+ * In multi-turn conversations, this prevents matching stale buttons.
+ */
+export async function checkNewReferenceButton(page: IPage, oldContainerCount: number): Promise<{ found: boolean; refCount?: number }> {
+  const result = await page.evaluate(
+    checkNewReferenceButtonScript(oldContainerCount)
+  ) as {
+    found: boolean;
+    refCount?: number;
+  };
+  return { found: result.found, refCount: result.refCount };
+}
+
+/**
+ * Get the count of existing valid reference containers BEFORE sending a new question.
+ * Only counts non-empty containers that have a button.
+ * This snapshot is used to detect when a NEW container appears.
+ */
+export async function snapshotReferenceCount(page: IPage): Promise<number> {
+  return await page.evaluate(`
+    (() => {
+      const all = document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]');
+      return Array.from(all).filter(c =>
+        c.innerHTML.trim().length > 0 && c.querySelector('.cursor-pointer')
+      ).length;
+    })()
+  `) as number;
+}
+
+/**
+ * Extract search keywords from the LAST (newest) container in the expanded search_query_result_block.
  * After clicking the reference button, keywords appear in a div with
  * class "mb-8 text-sm text-dbx-neutral-400" inside the container.
  * Format: "keyword1"、"keyword2"、"keyword3"
  *
  * Must be called AFTER clicking the reference button to expand the section.
  */
-function extractKeywordsScript(): string {
+function extractLastKeywordsScript(): string {
   return `
     (() => {
-      const container = document.querySelector('[data-plugin-identifier*="search_query_result_block"]');
+      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      if (containers.length === 0) return [];
+
+      // Find the LAST non-empty container with content
+      let container = null;
+      for (let i = containers.length - 1; i >= 0; i--) {
+        const c = containers[i];
+        if (c.innerHTML.trim().length > 0) {
+          container = c;
+          break;
+        }
+      }
       if (!container) return [];
 
       const keywordDiv = container.querySelector('.mb-8.text-sm.text-dbx-neutral-400, .mb-8.text-dbx-neutral-400');
@@ -190,7 +315,7 @@ function extractKeywordsScript(): string {
       if (!rawText) return [];
 
       return rawText
-        .split(/[\u3001，,]+/)
+        .split(/[\\u3001，,]+/)
         .map(k => k.replace(/[""""]/g, '').trim())
         .filter(k => k.length > 0);
     })()
@@ -199,8 +324,9 @@ function extractKeywordsScript(): string {
 
 /**
  * Extract search keywords from the page (must be called after clicking reference button).
+ * Always extracts from the LAST (newest) container.
  * Returns empty array if not yet expanded or no keywords found.
  */
 export async function extractDoubaoKeywords(page: IPage): Promise<string[]> {
-  return await page.evaluate(extractKeywordsScript()) as string[];
+  return await page.evaluate(extractLastKeywordsScript()) as string[];
 }

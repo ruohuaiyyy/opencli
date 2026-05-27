@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton } from './extract-references.js';
+import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton, snapshotReferenceCount, checkNewReferenceButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -656,6 +656,11 @@ export const referencesCommand = cli({
     // Small buffer to ensure React components are fully mounted
     await page.wait(0.5);
 
+    // Snapshot state before sending: message count and reference container count.
+    // This prevents matching stale data from previous turns in multi-conversation sessions.
+    const oldMessageCount = await page.evaluate(`(() => document.querySelectorAll('[data-message-id]').length)`) as number;
+    const oldRefCount = await snapshotReferenceCount(page);
+
     // Snapshot answer before sending
     const answerBefore = await page.evaluate(getAnswerScript()) as string;
 
@@ -732,9 +737,20 @@ export const referencesCommand = cli({
       `) as string;
     };
 
-    // Helper to check reference button
-    const checkRefButton = async (): Promise<{ found: boolean; refCount?: number }> => {
-      return await checkReferenceButton(page);
+    // Helper to check for a NEW reference button (one beyond the existing count).
+    // In multi-turn conversations, old containers already exist with their buttons.
+    // We must wait for a NEW container to appear from the current answer.
+    const checkRefButton = async (): Promise<{ found: boolean; refCount?: number; newContainerExists?: boolean }> => {
+      const newRefCount = await page.evaluate(
+        `(() => document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]').length)`
+      ) as number;
+
+      if (newRefCount <= oldRefCount) return { found: false, newContainerExists: false };
+
+      // New container exists - check if it has the reference button
+      const result = await checkNewReferenceButton(page, oldRefCount);
+
+      return { ...result, newContainerExists: true };
     };
 
     // Polling state
@@ -768,10 +784,11 @@ export const referencesCommand = cli({
         }
       }
 
-      // Check if reference button has appeared
+      // Check if a NEW reference button has appeared beyond the old count.
+      // In multi-turn conversations, we must NOT match old containers.
       const refBtnInfo = await checkRefButton();
 
-      if (refBtnInfo.found) {
+      if (refBtnInfo.found && refBtnInfo.newContainerExists) {
         refButtonFound = true;
         // Reference button found - AI has completed. Get answer now.
         answer = await getAnswerFromMessage();
