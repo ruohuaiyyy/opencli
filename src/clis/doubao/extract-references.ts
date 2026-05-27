@@ -34,7 +34,7 @@ function countReferenceContainersScript(): string {
 }
 
 /**
- * Check if the LAST non-empty reference container has a reference button.
+ * Check if the LAST non-empty container has a reference button AND whether links are already visible.
  * Skips empty React artifact containers.
  */
 function checkLastReferenceButtonScript(): string {
@@ -47,7 +47,7 @@ function checkLastReferenceButtonScript(): string {
       let container = null;
       for (let i = containers.length - 1; i >= 0; i--) {
         const c = containers[i];
-        if (c.innerHTML.trim().length > 0) {
+        if (c.querySelector('a[href^="http"]') || c.innerHTML.trim().length > 500) {
           container = c;
           break;
         }
@@ -61,7 +61,9 @@ function checkLastReferenceButtonScript(): string {
       if (!text.includes('参考')) return { found: false };
 
       const match = text.match(/参考\\s*(\\d+)\\s*篇资料/);
-      return { found: true, refCount: match ? parseInt(match[1], 10) : 0 };
+      // Check if links are already visible (panel already expanded)
+      const linksVisible = container.querySelectorAll('a[href^="http"]').length > 0;
+      return { found: true, refCount: match ? parseInt(match[1], 10) : 0, linksVisible };
     })()
   `;
 }
@@ -69,14 +71,18 @@ function checkLastReferenceButtonScript(): string {
 /**
  * Check if a NEW reference button exists beyond the old container count.
  * In multi-turn conversations, wait for a NEW container to appear first.
- * Only counts non-empty, valid containers.
+ * Only counts non-empty containers with "参考" text in the button.
  */
 function checkNewReferenceButtonScript(oldContainerCount: number): string {
   return `
     (() => {
       const allContainers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
-      // Only count non-empty containers as valid
-      const containers = allContainers.filter(c => c.innerHTML.trim().length > 0 && c.querySelector('.cursor-pointer'));
+      const containers = allContainers.filter(c => {
+        const btn = c.querySelector('.cursor-pointer');
+        if (!btn) return false;
+        const text = (btn.textContent || '').trim();
+        return text.includes('参考') && c.innerHTML.trim().length > 500;
+      });
       if (containers.length <= ${oldContainerCount}) return { found: false, containerCount: containers.length };
 
       const container = containers[containers.length - 1];
@@ -93,8 +99,9 @@ function checkNewReferenceButtonScript(oldContainerCount: number): string {
 }
 
 /**
- * Click the LAST non-empty container's reference button.
+ * Click the LAST valid container's reference button.
  * Skips empty React artifact containers.
+ * Uses unified selection: cursor-pointer + "参考" text + innerHTML > 500.
  */
 function clickLastReferenceButtonScript(): string {
   return `
@@ -102,13 +109,17 @@ function clickLastReferenceButtonScript(): string {
       const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
       if (containers.length === 0) return { clicked: false, error: 'No containers found' };
 
-      // Find the LAST container with a reference button (skip empty artifacts)
+      // Find the LAST valid container using unified criteria
       let container = null;
       for (let i = containers.length - 1; i >= 0; i--) {
         const c = containers[i];
-        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 0) {
-          container = c;
-          break;
+        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 500) {
+          const btn = c.querySelector('.cursor-pointer');
+          const text = (btn?.textContent || '').trim();
+          if (text.includes('参考')) {
+            container = c;
+            break;
+          }
         }
       }
       if (!container) return { clicked: false, error: 'No valid container found' };
@@ -123,8 +134,8 @@ function clickLastReferenceButtonScript(): string {
 }
 
 /**
- * Extract references from the LAST non-empty container with a reference button.
- * In multi-turn conversations, use querySelectorAll and take the last non-empty one.
+ * Extract references from the LAST valid container with a reference button.
+ * In multi-turn conversations, use querySelectorAll and take the last valid one.
  * Some containers may be empty React artifacts - skip those.
  *
  * DOM structure (verified 2026-05-27):
@@ -138,13 +149,17 @@ function extractLastReferencesScript(): string {
       const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
       if (containers.length === 0) return [];
 
-      // Find the LAST container that has a reference button (not empty React artifacts)
+      // Find the LAST valid container using unified criteria
       let container = null;
       for (let i = containers.length - 1; i >= 0; i--) {
         const c = containers[i];
-        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 0) {
-          container = c;
-          break;
+        if (c.querySelector('.cursor-pointer') && c.innerHTML.trim().length > 500) {
+          const btn = c.querySelector('.cursor-pointer');
+          const text = (btn?.textContent || '').trim();
+          if (text.includes('参考')) {
+            container = c;
+            break;
+          }
         }
       }
       if (!container) return [];
@@ -173,12 +188,29 @@ function extractLastReferencesScript(): string {
         }
 
         if (!title) {
-          // Fallback: use full text but strip leading number
+          // Fallback: use full link text but strip leading number
           title = (link.textContent || '').trim();
           title = title.replace(/^\\d+\\.\\s*/, '').trim();
         }
 
-        title = title || 'Untitled';
+        // Additional fallback: try child elements if text extraction failed
+        if (!title || title.length < 2) {
+          const children = Array.from(link.children);
+          for (const child of children) {
+            if (child.tagName === 'DIV' || child.tagName === 'SPAN') {
+              const childText = child.textContent?.trim();
+              if (childText && childText.length > 2 && !/^\\d+$/.test(childText)) {
+                title = childText;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!title || title.length < 2) {
+          // Last resort fallback
+          title = href.split('/').pop()?.split('?')[0]?.replace(/[_-]/g, ' ') || 'Untitled';
+        }
 
         const url = href
           .replace(/&hidePublishButton=true&hideTitle=true/g, '')
@@ -201,32 +233,65 @@ function extractLastReferencesScript(): string {
 }
 
 /**
- * Main extraction function: pure DOM extraction from the latest container.
- * 1. Find and click the LAST reference button to expand.
- * 2. Extract references from the expanded DOM (last container only).
+ * Smart extraction: check if links are already visible before clicking.
+ * The ref button is a toggle — if already expanded, clicking will COLLAPSE it
+ * and destroy the links we need.
+ *
+ * Flow:
+ * 1. Find the last valid container with a ref button
+ * 2. Check if links are ALREADY visible (expanded state)
+ * 3. If not, click to expand, then wait for React to render
+ * 4. Extract references from DOM
+ *
+ * Uses unified container selection: cursor-pointer + "参考" text + innerHTML > 500.
  */
 export async function extractDoubaoReferences(page: IPage): Promise<DoubaoReference[]> {
+  // Check if ref button exists
   const btnInfo = await page.evaluate(
-    checkNewReferenceButtonScript(0)
-  ) as { found: boolean };
+    checkLastReferenceButtonScript()
+  ) as { found: boolean; refCount?: number; linksVisible?: boolean };
 
   if (!btnInfo.found) {
     return [];
   }
 
-  // Click to expand references (last container)
-  const clickResult = await page.evaluate(clickLastReferenceButtonScript()) as { clicked?: boolean; error?: string };
-  if (!clickResult?.clicked) {
-    return [];
+  // Check if links are ALREADY visible (no click needed)
+  const preCheck = await page.evaluate(`
+    (() => {
+      const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
+      for (let i = containers.length - 1; i >= 0; i--) {
+        const c = containers[i];
+        if (c.innerHTML.trim().length > 500 && c.querySelector('.cursor-pointer')) {
+          const btn = c.querySelector('.cursor-pointer');
+          const text = (btn?.textContent || '').trim();
+          if (text.includes('参考')) {
+            const links = c.querySelectorAll('a[href^="http"]');
+            return { linksAlreadyVisible: links.length > 0, linkCount: links.length };
+          }
+        }
+      }
+      return { linksAlreadyVisible: false, linkCount: 0 };
+    })()
+  `) as { linksAlreadyVisible: boolean; linkCount: number };
+
+  // Only click if links are NOT already visible
+  if (!preCheck.linksAlreadyVisible) {
+    const clickResult = await page.evaluate(clickLastReferenceButtonScript()) as { clicked?: boolean; error?: string };
+    if (!clickResult?.clicked) {
+      return [];
+    }
+    // Wait LONGER for React to render the expanded reference list
+    // DouBao's animation + React hydration takes ~1-2 seconds
+    await page.wait(3);
+  } else {
+    // Links already visible, small wait for DOM stability
+    await page.wait(1);
   }
 
-  // Wait for expansion
-  await page.wait(2);
-
-  // Extract from DOM (last container)
+  // Extract from DOM
   const refs = await page.evaluate(extractLastReferencesScript()) as DoubaoReference[];
 
-  // Retry if empty
+  // Retry if empty (could be slow rendering)
   if (refs.length === 0) {
     for (let i = 0; i < 3; i++) {
       await page.wait(2);
@@ -276,9 +341,12 @@ export async function snapshotReferenceCount(page: IPage): Promise<number> {
   return await page.evaluate(`
     (() => {
       const all = document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]');
-      return Array.from(all).filter(c =>
-        c.innerHTML.trim().length > 0 && c.querySelector('.cursor-pointer')
-      ).length;
+      return Array.from(all).filter(c => {
+        const btn = c.querySelector('.cursor-pointer');
+        if (!btn) return false;
+        const text = (btn.textContent || '').trim();
+        return text.includes('参考') && c.innerHTML.trim().length > 500;
+      }).length;
     })()
   `) as number;
 }
@@ -290,6 +358,7 @@ export async function snapshotReferenceCount(page: IPage): Promise<number> {
  * Format: "keyword1"、"keyword2"、"keyword3"
  *
  * Must be called AFTER clicking the reference button to expand the section.
+ * Uses unified container selection: cursor-pointer + "参考" text + innerHTML > 500.
  */
 function extractLastKeywordsScript(): string {
   return `
@@ -297,13 +366,17 @@ function extractLastKeywordsScript(): string {
       const containers = Array.from(document.querySelectorAll('[data-plugin-identifier*="search_query_result_block"]'));
       if (containers.length === 0) return [];
 
-      // Find the LAST non-empty container with content
+      // Find the LAST valid container using unified criteria
       let container = null;
       for (let i = containers.length - 1; i >= 0; i--) {
         const c = containers[i];
-        if (c.innerHTML.trim().length > 0) {
-          container = c;
-          break;
+        if (c.innerHTML.trim().length > 500 && c.querySelector('.cursor-pointer')) {
+          const btn = c.querySelector('.cursor-pointer');
+          const text = (btn?.textContent || '').trim();
+          if (text.includes('参考')) {
+            container = c;
+            break;
+          }
         }
       }
       if (!container) return [];

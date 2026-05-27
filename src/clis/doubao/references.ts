@@ -786,13 +786,14 @@ export const referencesCommand = cli({
 
       // Check if a NEW reference button has appeared beyond the old count.
       // In multi-turn conversations, we must NOT match old containers.
+      // NOTE: ref button appears BEFORE answer is complete - we only use it
+      // as a signal to start the post-answer stability check later.
       const refBtnInfo = await checkRefButton();
 
       if (refBtnInfo.found && refBtnInfo.newContainerExists) {
         refButtonFound = true;
-        // Reference button found - AI has completed. Get answer now.
-        answer = await getAnswerFromMessage();
-        break;
+        // Do NOT break here - the ref button can appear before AI finishes writing.
+        // We continue polling until content is stable.
       }
 
       // Get current answer from message
@@ -822,17 +823,15 @@ export const referencesCommand = cli({
         lastContentChangeTime = Date.now();
       }
 
-      // Exit early if AI appears to have completed response but no reference button exists
-      // This prevents 300s timeout when answer is ready but has no references
+      // Exit on content stability:
+      // - Always wait 6s of no change before considering AI done.
+      // - Ref button appears BEFORE answer is complete (during streaming).
+      // - The ONLY signal of completion is content stability, NOT ref button presence.
       const elapsedSinceChange = Date.now() - lastContentChangeTime;
-      if (answer && answer.length > 10 && stableCount >= 3 && elapsedSinceChange >= aiCompletionThreshold) {
-        // Double-check: verify AI is not still streaming/thinking
-        const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
-        if (!isStreaming) {
+      if (answer && answer.length > 10 && stableCount >= 3) {
+        if (elapsedSinceChange >= 6000) {
           break;
         }
-        // Still streaming, reset stability to keep waiting
-        stableCount = 0;
       }
 
       // Check for timeout
@@ -904,9 +903,10 @@ saveDoubaoLastChatId(currentChatId, accountName);
     // extractDoubaoReferences already clicks the button and extracts references
     await page.wait(2);
 
-    // Poll to ensure reference content is fully loaded
+    // Poll to ensure reference content is fully loaded (React render timing)
+    await page.wait(3);
     let references = await extractDoubaoReferences(page);
-    const maxRetries = 4;
+    const maxRetries = 5;
     let retries = 0;
     while (references.length === 0 && retries < maxRetries) {
       await page.wait(2);
