@@ -10,7 +10,9 @@
  *   opencli mofang add-node --component "业务直调" --x 500 --y 300
  *   opencli mofang add-node --component "业务直调" --x 500 --y 300 --config '{"url":"http://..."}'
  *
- * Usage (multiple nodes via --nodes JSON array):
+ * Usage (multiple nodes via --nodes-file JSON file — recommended for Windows/PowerShell):
+ *   opencli mofang add-node --nodes-file nodes.json
+ *   (nodes.json 内容: [{"component":"业务直调","x":500,"y":300,"config":{}},{"component":"端内通知","x":700,"y":300}])
  *   opencli mofang add-node --nodes '[{"component":"业务直调","x":500,"y":300,"config":{"url":"http://..."}},{"component":"端内通知","x":700,"y":300}]'
  *
  * Usage (multiple nodes via --components):
@@ -36,20 +38,21 @@ cli({
   browser: true,
   navigateBefore: false, // Reuse current page — do NOT navigate away from create-event page
   args: [
-    // ── Mode 1: JSON array (highest priority) ──────────────────────────────
-    { name: 'nodes', required: false, help: '节点数组 JSON，支持批量添加，如: \'[{"component":"业务直调","x":500,"y":300,"config":{}}]\'' },
+    // ── Mode 1: JSON file (recommended for PowerShell) ─────────────────────
+    { name: 'nodes-file', required: false, help: '从 JSON 文件读取节点配置 (推荐 Windows/PowerShell 使用)，示例: nodes.json' },
 
-    // ── Mode 2: Multi-node via --components ───────────────────────────────
+    // ── Mode 2: JSON array string ──────────────────────────────────────────
+    { name: 'nodes', required: false, help: '节点数组 JSON (适合 bash，PowerShell 建议用 --nodes-file)' },
+
+    // ── Mode 3: Multi-node via --components ───────────────────────────────
     { name: 'components', required: false, help: '多个组件名称，逗号分隔 (如: 业务直调,端内通知,代金券)' },
     { name: 'x', required: false, help: '多个 X 坐标，逗号分隔 (如: 500,700,900)' },
     { name: 'y', required: false, help: '多个 Y 坐标，逗号分隔 (如: 300,300,300)' },
     { name: 'configs', required: false, help: '各组件配置 JSON (如: \'{"业务直调":{"url":"..."},"端内通知":{}}\')' },
 
-    // ── Mode 3: Single node (backward compatible) ──────────────────────────
+    // ── Mode 4: Single node (backward compatible) ──────────────────────────
     { name: 'component', required: false, help: '组件名称 (单节点模式)' },
     { name: 'config', required: false, help: '节点配置 JSON (单节点模式，如: {"url":"http://..."})' },
-
-    // Coordinates also available as --x/--y for single node mode
   ],
   columns: ['status', 'detail'],
   func: async (page: IPage | null, kwargs) => {
@@ -59,7 +62,25 @@ cli({
     // ── Determine mode and parse nodes ─────────────────────────────────────
     let nodes: MofangNode[] = [];
 
-    if (kwargs.nodes) {
+    if (kwargs['nodes-file']) {
+      // Mode 1: Read nodes from JSON file (PowerShell friendly)
+      const path = String(kwargs['nodes-file']).trim();
+      const { readFileSync } = await import('fs');
+      const fileContent = readFileSync(path, 'utf-8');
+      try {
+        const parsed = JSON.parse(fileContent);
+        if (!Array.isArray(parsed)) throw new Error('--nodes-file 必须是 JSON 数组格式');
+        nodes = parsed.map((n: Record<string, unknown>) => ({
+          component: String(n.component ?? '').trim(),
+          x: n.x !== undefined ? parseInt(String(n.x), 10) : 500,
+          y: n.y !== undefined ? parseInt(String(n.y), 10) : 300,
+          config: n.config && typeof n.config === 'object' ? n.config as Record<string, unknown> : {},
+        }));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error('nodes-file 读取失败 (' + path + '): ' + msg);
+      }
+    } else if (kwargs.nodes) {
       // Mode 1: --nodes JSON array
       try {
         const parsed = JSON.parse(String(kwargs.nodes));
