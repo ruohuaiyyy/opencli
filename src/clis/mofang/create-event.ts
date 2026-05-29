@@ -77,68 +77,89 @@ cli({
       () => {
         const target = ${JSON.stringify(businessLine)};
 
-        // Click to open dropdown
+        // Open dropdown by finding the visible select with "请选择"
         const selects = document.querySelectorAll('.ant-select');
         let bizSelect = null;
         for (const s of selects) {
-          if (s.textContent.includes('请选择') || s.textContent.includes('业务线')) {
-            if (s.offsetParent !== null) {
-              bizSelect = s;
-              break;
-            }
+          // First select that shows "请选择" is the business line selector
+          if (s.textContent.includes('请选择') && s.offsetParent !== null) {
+            bizSelect = s;
+            break;
           }
         }
         if (!bizSelect) return { ok: false, error: '找不到业务线下拉框' };
-        bizSelect.click();
+
+        // Dispatch proper mouse events for React compatibility
+        const rect = bizSelect.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const mousedown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
+        const mouseup = new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
+        const click = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
+        bizSelect.dispatchEvent(mousedown);
+        bizSelect.dispatchEvent(mouseup);
+        bizSelect.dispatchEvent(click);
         return { ok: true };
       }
     `);
     if (!bizLineSelected.ok) {
       throw new Error(bizLineSelected.error || '业务线选择失败');
     }
-    await page.wait({ time: 1 });
 
-    // Select the business line option — the dropdown renders via React portal
-    // so we need to search the full document for the text node and click its parent
-    await page.wait({ time: 0.5 });
+    // Poll for dropdown options to render (React portal, async by nature)
+    await page.wait({ time: 1 });
     const bizLineChosen = await page.evaluate(`
       () => {
         const target = ${JSON.stringify(businessLine)};
 
-        // Strategy 1: search for leaf text nodes matching the target
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
-        let node;
-        while (node = walker.nextNode()) {
-          if (node.textContent.trim() === target) {
-            const parent = node.parentElement;
-            if (parent && parent.offsetParent !== null) {
-              // Find the closest clickable ancestor
-              let clickable = parent;
-              for (let i = 0; i < 5; i++) {
-                if (!clickable || clickable === document.body) break;
-                const role = clickable.getAttribute('role') || '';
-                const cls = clickable.className || '';
-                if (role.includes('option') || cls.includes(' ant-select-item') || cls.includes('-item-option')) {
-                  clickable.click();
+        // Poll: search body-level portal divs for the option text
+        const findOption = () => {
+          const bodyDivs = document.body.children;
+          for (let i = 0; i < bodyDivs.length; i++) {
+            const div = bodyDivs[i];
+            const style = window.getComputedStyle(div);
+            // Portal divs have high z-index and absolute/fixed positioning
+            if (style.position === 'absolute' || style.position === 'fixed') {
+              const allTexts = div.textContent || '';
+              if (!allTexts.includes(target)) continue;
+
+              // Find the specific element with matching text and click it
+              const options = div.querySelectorAll([
+                '.rc-virtual-list .ant-select-item',
+                '.rc-virtual-list [class*="item"]',
+                'div[role="option"]',
+                'li[role="option"]',
+                '[class*="select-item"]',
+                '[class*="select"] div, [class*="select"] span',
+                'div, span, li'
+              ].join(', '));
+
+              for (const opt of options) {
+                const t = (opt.textContent || '').trim();
+                if (t === target && opt.offsetParent !== null) {
+                  opt.click();
                   return { ok: true, value: target };
                 }
-                clickable = clickable.parentElement;
               }
-              // Fallback: click the text element itself
-              parent.click();
-              return { ok: true, value: target };
+
+              // Broader: find leaf text node with target and click parent
+              const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT, null);
+              let node;
+              while (node = walker.nextNode()) {
+                if (node.textContent.trim() === target) {
+                  const parent = node.parentElement;
+                  if (parent) {
+                    parent.click();
+                    return { ok: true, value: target };
+                  }
+                }
+              }
             }
           }
-        }
+          return null;
+        };
 
-        // Strategy 2: look for elements with aria-label matching the target
-        const byLabel = document.querySelector('[aria-label="' + target + '"], [title="' + target + '"]');
-        if (byLabel && byLabel.offsetParent !== null) {
-          byLabel.click();
-          return { ok: true, value: target };
-        }
-
-        return { ok: false, error: '找不到业务线选项: ' + target + '，请确认业务线名称是否正确' };
+        return findOption() || { ok: false, error: '找不到业务线选项: ' + target + '，请确认业务线名称是否正确' };
       }
     `);
     if (!bizLineChosen.ok) {
