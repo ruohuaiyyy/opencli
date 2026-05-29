@@ -40,7 +40,6 @@ cli({
     { name: 'owner', required: false, help: '负责人' },
     { name: 'frequency', required: false, help: '频次控制', default: '活动期间仅一次' },
     { name: 'grayscale', required: false, help: '灰度用户(测试用)，多个用逗号分隔' },
-    { name: 'action', required: false, help: '保存动作', choices: ['draft', 'grayscale'], default: 'draft' },
   ],
   columns: ['status', 'detail'],
   func: async (page: IPage | null, kwargs) => {
@@ -55,7 +54,6 @@ cli({
     const owner = kwargs.owner ? String(kwargs.owner).trim() : '';
     const frequency = String(kwargs.frequency ?? '活动期间仅一次').trim();
     const grayscale = kwargs.grayscale ? String(kwargs.grayscale).trim() : '';
-    const action = String(kwargs.action ?? 'draft').trim();
 
     // Validate inputs
     if (!businessLine) throw new Error('--business-line 不能为空');
@@ -340,58 +338,13 @@ cli({
       await page.wait({ time: 0.5 });
     }
 
-    // ── Step 11: Save ──────────────────────────────────────────────────────
-    const saveBtnText = action === 'grayscale' ? '保存并灰度' : '保存草稿';
-    const saved = await page.evaluate(`
-      () => {
-        const target = ${JSON.stringify(saveBtnText)};
-        const buttons = document.querySelectorAll('button');
-        for (const btn of buttons) {
-          const text = (btn.textContent || btn.innerText || '').trim();
-          if (text === target && !btn.disabled && btn.offsetParent !== null) {
-            btn.click();
-            return { ok: true };
-          }
-        }
-        return { ok: false, error: '找不到${saveBtnText}按钮' };
-      }
-    `);
-    if (!saved.ok) {
-      throw new Error(saved.error || '保存失败');
-    }
-
-    // ── Step 12: Wait and verify ───────────────────────────────────────────
-    await page.wait({ time: 3 });
-
-    // Check for success/error messages
-    const result = await page.evaluate(`
-      () => {
-        const text = document.body.innerText || '';
-
-        // Check common success/error indicators
-        if (text.includes('保存成功') || text.includes('成功') || text.includes('success')) {
-          return { status: '✅ 保存成功' };
-        }
-        if (text.includes('失败') || text.includes('error') || text.includes('异常')) {
-          return { status: '❌ 保存失败，请在浏览器中查看详细信息' };
-        }
-        return { status: '⚠️ 操作完成，请在浏览器中确认' };
-      }
-    `);
-
     return [
       {
-        status: result.status,
+        status: '✅ 表单已填写，请执行以下命令保存',
         detail: [
-          `业务线: ${businessLine}`,
-          `code: ${code}`,
-          `名称: ${name}`,
-          desc ? `描述: ${desc}` : '',
-          `时间: ${startDate} ~ ${endDate}`,
-          action === 'grayscale' ? '已保存为灰度' : '已保存为草稿',
-        ]
-          .filter(Boolean)
-          .join(' | '),
+          `opencli mofang save-draft`,
+          `opencli mofang save-grayscale`,
+        ].join('\n'),
       },
     ];
   },
