@@ -23,6 +23,7 @@ cli({
   domain: 'mofang.beta.qunar.com',
   strategy: Strategy.COOKIE,
   browser: true,
+  navigateBefore: false, // Reuse current page — do NOT navigate away from create-event page
   args: [
     { name: 'component', required: true, help: '组件名称 (如: 业务直调, 端内通知, 代金券)' },
     { name: 'x', required: false, help: '画布 X 坐标', default: '500' },
