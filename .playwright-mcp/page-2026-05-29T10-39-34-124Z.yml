@@ -1,0 +1,48 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - button "返回" [ref=e9] [cursor=pointer]:
+        - img "arrow-left" [ref=e10]:
+          - img [ref=e11]
+      - generic "编辑活动" [ref=e13]
+    - generic [ref=e14]:
+      - button "取 消" [ref=e15] [cursor=pointer]:
+        - generic [ref=e16]: 取 消
+      - button "保存草稿" [ref=e17] [cursor=pointer]:
+        - generic [ref=e18]: 保存草稿
+      - button "保存并灰度" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: 保存并灰度
+  - generic [ref=e21]:
+    - generic [ref=e22]:
+      - img "double-left" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+      - generic [ref=e29]:
+        - textbox "搜索组件" [ref=e34]
+        - generic [ref=e38]:
+          - button "right 行为策略" [expanded] [ref=e40] [cursor=pointer]:
+            - img "right" [ref=e41]:
+              - img [ref=e42]
+            - text: 行为策略
+          - button "right 逻辑分支" [expanded] [ref=e47] [cursor=pointer]:
+            - img "right" [ref=e48]:
+              - img [ref=e49]
+            - text: 逻辑分支
+          - button "right 人群圈选" [expanded] [ref=e54] [cursor=pointer]:
+            - img "right" [ref=e55]:
+              - img [ref=e56]
+            - text: 人群圈选
+          - button "right 权益发放" [expanded] [ref=e61] [cursor=pointer]:
+            - img "right" [ref=e62]:
+              - img [ref=e63]
+            - text: 权益发放
+          - button "right 触达方式" [expanded] [ref=e68] [cursor=pointer]:
+            - img "right" [ref=e69]:
+              - img [ref=e70]
+            - text: 触达方式
+          - button "right 其他组件" [expanded] [ref=e75] [cursor=pointer]:
+            - img "right" [ref=e76]:
+              - img [ref=e77]
+            - text: 其他组件
+    - img [ref=e88] [cursor=pointer]
+    - img "double-right" [ref=e92] [cursor=pointer]:
+      - img [ref=e93]

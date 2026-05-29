@@ -1,0 +1,199 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - button "返回" [ref=e9] [cursor=pointer]:
+        - img "arrow-left" [ref=e10]:
+          - img [ref=e11]
+      - generic "编辑活动" [ref=e13]
+    - generic [ref=e14]:
+      - button "取 消" [ref=e15] [cursor=pointer]:
+        - generic [ref=e16]: 取 消
+      - button "保存草稿" [ref=e17] [cursor=pointer]:
+        - generic [ref=e18]: 保存草稿
+      - button "保存并灰度" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: 保存并灰度
+  - generic [ref=e21]:
+    - generic [ref=e22]:
+      - img "double-left" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+      - generic [ref=e29]:
+        - textbox "搜索组件" [ref=e34]
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - button "right 行为策略" [expanded] [ref=e40] [cursor=pointer]:
+              - img "right" [ref=e41]:
+                - img [ref=e42]
+              - text: 行为策略
+            - generic [ref=e128]:
+              - generic [ref=e131]:
+                - img [ref=e133]
+                - generic [ref=e134]: 端内用户行为
+              - generic [ref=e137]:
+                - img [ref=e139]
+                - generic [ref=e140]: MQ消息
+              - generic [ref=e143]:
+                - img [ref=e145]
+                - generic [ref=e146]: 业务直调
+              - generic [ref=e149]:
+                - img [ref=e151]
+                - generic [ref=e152]: Tagger实时标签
+              - generic [ref=e155]:
+                - img [ref=e157]
+                - generic [ref=e158]: 定时器
+          - generic [ref=e46]:
+            - button "right 逻辑分支" [expanded] [ref=e47] [cursor=pointer]:
+              - img "right" [ref=e48]:
+                - img [ref=e49]
+              - text: 逻辑分支
+            - generic [ref=e159]:
+              - generic [ref=e162]:
+                - img [ref=e164]
+                - generic [ref=e165]: IF判断
+              - generic [ref=e168]:
+                - img [ref=e170]
+                - generic [ref=e171]: 选择器
+              - generic [ref=e174]:
+                - img [ref=e176]
+                - generic [ref=e177]: 逻辑关系
+          - generic [ref=e53]:
+            - button "right 人群圈选" [expanded] [ref=e54] [cursor=pointer]:
+              - img "right" [ref=e55]:
+                - img [ref=e56]
+              - text: 人群圈选
+            - generic [ref=e178]:
+              - generic [ref=e181]:
+                - img [ref=e183]
+                - generic [ref=e184]: Tagger离线标签
+              - generic [ref=e187]:
+                - img [ref=e189]
+                - generic [ref=e190]: AB分流
+          - generic [ref=e60]:
+            - button "right 权益发放" [expanded] [ref=e61] [cursor=pointer]:
+              - img "right" [ref=e62]:
+                - img [ref=e63]
+              - text: 权益发放
+            - generic [ref=e194]:
+              - img [ref=e196]
+              - generic [ref=e197]: 代金券
+          - generic [ref=e67]:
+            - button "right 触达方式" [expanded] [ref=e68] [cursor=pointer]:
+              - img "right" [ref=e69]:
+                - img [ref=e70]
+              - text: 触达方式
+            - generic [ref=e198]:
+              - generic [ref=e201]:
+                - img [ref=e203]
+                - generic [ref=e204]: 端内通知
+              - generic [ref=e207]:
+                - img [ref=e209]
+                - generic [ref=e210]: 触达平台
+              - generic [ref=e213]:
+                - img [ref=e215]
+                - generic [ref=e216]: 直调返回
+          - generic [ref=e74]:
+            - button "right 其他组件" [expanded] [ref=e75] [cursor=pointer]:
+              - img "right" [ref=e76]:
+                - img [ref=e77]
+              - text: 其他组件
+            - generic [ref=e217]:
+              - generic [ref=e220]:
+                - img [ref=e222]
+                - generic [ref=e223]: 子流程
+              - generic [ref=e226]:
+                - img [ref=e228]
+                - generic [ref=e229]: 接口调用
+              - generic [ref=e232]:
+                - img [ref=e234]
+                - generic [ref=e235]: 延迟器
+              - generic [ref=e238]:
+                - img [ref=e240]
+                - generic [ref=e241]: 发送MQ
+              - generic [ref=e244]:
+                - img [ref=e246]
+                - generic [ref=e247]: 优先级
+              - generic [ref=e250]:
+                - img [ref=e252]
+                - generic [ref=e253]: Groovy
+              - generic [ref=e256]:
+                - img [ref=e258]
+                - generic [ref=e259]: 集线器
+    - generic [ref=e81]:
+      - img [ref=e88] [cursor=pointer]
+      - generic [ref=e94]:
+        - button "zoom-in" [ref=e95]:
+          - img "zoom-in" [ref=e97]:
+            - img [ref=e98]
+        - button "zoom-out" [ref=e100]:
+          - img "zoom-out" [ref=e102]:
+            - img [ref=e103]
+        - button "one-to-one" [ref=e105]:
+          - img "one-to-one" [ref=e107]:
+            - img [ref=e108]
+        - button "compress" [ref=e112]:
+          - img "compress" [ref=e114]:
+            - img [ref=e115]
+        - button "fullscreen" [ref=e117]:
+          - img "fullscreen" [ref=e119]:
+            - img [ref=e120]
+    - generic [ref=e122]:
+      - img "double-right" [ref=e124] [cursor=pointer]:
+        - img [ref=e125]
+      - generic [ref=e260]:
+        - generic [ref=e261]:
+          - img [ref=e263]
+          - generic [ref=e264]: 活动配置
+        - generic [ref=e267]:
+          - generic [ref=e268]:
+            - generic "业务线" [ref=e270]: "* 业务线 :"
+            - generic [ref=e274] [cursor=pointer]:
+              - generic [ref=e275]:
+                - combobox "* 业务线 :" [ref=e277]
+                - generic: 请选择
+              - generic:
+                - img:
+                  - img
+          - generic [ref=e278]:
+            - generic "活动code" [ref=e280]: "* 活动code :"
+            - textbox "* 活动code :" [ref=e284]:
+              - /placeholder: 活动唯一标识，建议为字母
+          - generic [ref=e285]:
+            - generic "活动名称" [ref=e287]: "* 活动名称 :"
+            - textbox "* 活动名称 :" [ref=e291]:
+              - /placeholder: 自定义
+          - generic [ref=e292]:
+            - generic "活动描述" [ref=e294]: "活动描述 :"
+            - textbox "活动描述 :" [ref=e298]:
+              - /placeholder: 请输入
+          - generic [ref=e299]:
+            - generic "开始时间" [ref=e301]: "* 开始时间 :"
+            - generic [ref=e306]:
+              - textbox "* 开始时间 :" [ref=e307]:
+                - /placeholder: 请选择日期
+              - generic:
+                - img "calendar":
+                  - img
+          - generic [ref=e308]:
+            - generic "结束时间" [ref=e310]: "* 结束时间 :"
+            - generic [ref=e315]:
+              - textbox "* 结束时间 :" [ref=e316]:
+                - /placeholder: 请选择日期
+              - generic:
+                - img "calendar":
+                  - img
+          - generic [ref=e317]:
+            - generic "负责人" [ref=e319]: "负责人 :"
+            - textbox "负责人 :" [ref=e323]:
+              - /placeholder: ""
+          - generic [ref=e324]:
+            - generic "频次控制" [ref=e326]: "频次控制 :"
+            - generic [ref=e330] [cursor=pointer]:
+              - generic [ref=e331]:
+                - combobox "频次控制 :" [ref=e333]
+                - generic "活动期间仅一次" [ref=e334]
+              - generic:
+                - img:
+                  - img
+          - generic [ref=e335]:
+            - generic "灰度用户" [ref=e337]: "灰度用户 :"
+            - textbox "灰度用户 :" [ref=e341]:
+              - /placeholder: 此输入框内有值（username）时，此活动仅会发送给输入框内用户，输入框内用户不受任何频次控制。多个用户用英文逗号隔开~

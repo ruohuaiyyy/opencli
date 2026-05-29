@@ -5,7 +5,7 @@
  * Everything else is just JS code sent via 'exec'.
  */
 
-export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions';
+export type Action = 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'mouse';
 
 export interface Command {
   /** Unique request ID */
@@ -32,6 +32,14 @@ export interface Command {
   quality?: number;
   /** Whether to capture full page (not just viewport) */
   fullPage?: boolean;
+  /** Mouse event type (mouse action) */
+  mouseType?: 'mousePressed' | 'mouseReleased' | 'mouseMoved';
+  /** Mouse X coordinate (mouse action) */
+  x?: number;
+  /** Mouse Y coordinate (mouse action) */
+  y?: number;
+  /** Mouse button: left, right, middle (mouse action) */
+  button?: 'left' | 'right' | 'middle';
 }
 
 export interface Result {

@@ -1,0 +1,139 @@
+- generic [ref=e4]:
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - button "返回" [ref=e9] [cursor=pointer]:
+        - img "arrow-left" [ref=e10]:
+          - img [ref=e11]
+      - generic "编辑活动" [ref=e13]
+    - generic [ref=e14]:
+      - button "取 消" [ref=e15] [cursor=pointer]:
+        - generic [ref=e16]: 取 消
+      - button "保存草稿" [ref=e17] [cursor=pointer]:
+        - generic [ref=e18]: 保存草稿
+      - button "保存并灰度" [ref=e19] [cursor=pointer]:
+        - generic [ref=e20]: 保存并灰度
+  - generic [ref=e21]:
+    - generic [ref=e22]:
+      - img "double-left" [ref=e24] [cursor=pointer]:
+        - img [ref=e25]
+      - generic [ref=e29]:
+        - textbox "搜索组件" [ref=e34]
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - button "right 行为策略" [expanded] [ref=e40] [cursor=pointer]:
+              - img "right" [ref=e41]:
+                - img [ref=e42]
+              - text: 行为策略
+            - generic [ref=e46]:
+              - generic [ref=e49]:
+                - img [ref=e51]
+                - generic [ref=e52]: 端内用户行为
+              - generic [ref=e55]:
+                - img [ref=e57]
+                - generic [ref=e58]: MQ消息
+              - generic [ref=e61]:
+                - img [ref=e63]
+                - generic [ref=e64]: 业务直调
+              - generic [ref=e67]:
+                - img [ref=e69]
+                - generic [ref=e70]: Tagger实时标签
+              - generic [ref=e73]:
+                - img [ref=e75]
+                - generic [ref=e76]: 定时器
+          - generic [ref=e77]:
+            - button "right 逻辑分支" [expanded] [ref=e78] [cursor=pointer]:
+              - img "right" [ref=e79]:
+                - img [ref=e80]
+              - text: 逻辑分支
+            - generic [ref=e84]:
+              - generic [ref=e87]:
+                - img [ref=e89]
+                - generic [ref=e90]: IF判断
+              - generic [ref=e93]:
+                - img [ref=e95]
+                - generic [ref=e96]: 选择器
+              - generic [ref=e99]:
+                - img [ref=e101]
+                - generic [ref=e102]: 逻辑关系
+          - generic [ref=e103]:
+            - button "right 人群圈选" [expanded] [ref=e104] [cursor=pointer]:
+              - img "right" [ref=e105]:
+                - img [ref=e106]
+              - text: 人群圈选
+            - generic [ref=e110]:
+              - generic [ref=e113]:
+                - img [ref=e115]
+                - generic [ref=e116]: Tagger离线标签
+              - generic [ref=e119]:
+                - img [ref=e121]
+                - generic [ref=e122]: AB分流
+          - generic [ref=e123]:
+            - button "right 权益发放" [expanded] [ref=e124] [cursor=pointer]:
+              - img "right" [ref=e125]:
+                - img [ref=e126]
+              - text: 权益发放
+            - generic [ref=e133]:
+              - img [ref=e135]
+              - generic [ref=e136]: 代金券
+          - generic [ref=e137]:
+            - button "right 触达方式" [expanded] [ref=e138] [cursor=pointer]:
+              - img "right" [ref=e139]:
+                - img [ref=e140]
+              - text: 触达方式
+            - generic [ref=e144]:
+              - generic [ref=e147]:
+                - img [ref=e149]
+                - generic [ref=e150]: 端内通知
+              - generic [ref=e153]:
+                - img [ref=e155]
+                - generic [ref=e156]: 触达平台
+              - generic [ref=e159]:
+                - img [ref=e161]
+                - generic [ref=e162]: 直调返回
+          - generic [ref=e163]:
+            - button "right 其他组件" [expanded] [ref=e164] [cursor=pointer]:
+              - img "right" [ref=e165]:
+                - img [ref=e166]
+              - text: 其他组件
+            - generic [ref=e170]:
+              - generic [ref=e173]:
+                - img [ref=e175]
+                - generic [ref=e176]: 子流程
+              - generic [ref=e179]:
+                - img [ref=e181]
+                - generic [ref=e182]: 接口调用
+              - generic [ref=e185]:
+                - img [ref=e187]
+                - generic [ref=e188]: 延迟器
+              - generic [ref=e191]:
+                - img [ref=e193]
+                - generic [ref=e194]: 发送MQ
+              - generic [ref=e197]:
+                - img [ref=e199]
+                - generic [ref=e200]: 优先级
+              - generic [ref=e203]:
+                - img [ref=e205]
+                - generic [ref=e206]: Groovy
+              - generic [ref=e209]:
+                - img [ref=e211]
+                - generic [ref=e212]: 集线器
+    - generic [ref=e213]:
+      - img [ref=e220] [cursor=pointer]
+      - generic [ref=e226]:
+        - button "zoom-in" [ref=e227]:
+          - img "zoom-in" [ref=e229]:
+            - img [ref=e230]
+        - button "zoom-out" [ref=e232]:
+          - img "zoom-out" [ref=e234]:
+            - img [ref=e235]
+        - button "one-to-one" [ref=e237]:
+          - img "one-to-one" [ref=e239]:
+            - img [ref=e240]
+        - button "compress" [ref=e244]:
+          - img "compress" [ref=e246]:
+            - img [ref=e247]
+        - button "fullscreen" [ref=e249]:
+          - img "fullscreen" [ref=e251]:
+            - img [ref=e252]
+    - img "double-right" [ref=e256] [cursor=pointer]:
+      - img [ref=e257]

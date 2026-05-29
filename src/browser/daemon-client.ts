@@ -18,7 +18,7 @@ function generateId(): string {
 
 export interface DaemonCommand {
   id: string;
-  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions';
+  action: 'exec' | 'navigate' | 'tabs' | 'cookies' | 'screenshot' | 'close-window' | 'sessions' | 'mouse';
   tabId?: number;
   code?: string;
   workspace?: string;
@@ -29,6 +29,10 @@ export interface DaemonCommand {
   format?: 'png' | 'jpeg';
   quality?: number;
   fullPage?: boolean;
+  mouseType?: 'mousePressed' | 'mouseReleased' | 'mouseMoved';
+  x?: number;
+  y?: number;
+  button?: 'left' | 'right' | 'middle';
 }
 
 export interface DaemonResult {

@@ -53,22 +53,7 @@ ACCOUNT_LIMIT_TASK_TYPES = {"opencli-analysis-doubao", "opencli-analysis-doubaoT
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
-PROXY_FILE = Path.home() / ".opencli" / "accounts" / "proxy.json"
 PROFILES_DIR = Path.home() / ".opencli" / "profiles"
-
-
-def get_proxy(account):
-    """根据账号获取代理配置，无代理配置则返回 None"""
-    try:
-        if PROXY_FILE.exists():
-            proxies = json.loads(PROXY_FILE.read_text(encoding="utf-8"))
-            proxy = proxies.get(account)
-            if proxy:
-                log.info("Using proxy for account %s: %s", account, proxy)
-                return proxy
-    except Exception as e:
-        log.warning("Failed to read proxy config: %s", e)
-    return None
 
 
 def get_doubao_accounts():
@@ -144,22 +129,12 @@ def restart_chrome(account):
 
     profile_dir = PROFILES_DIR / account
     profile_dir.mkdir(parents=True, exist_ok=True)
-
-    proxy = get_proxy(account)
-
-    cmd = [
-        "chrome",
-        f"--user-data-dir={profile_dir}",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-    ]
-    if proxy:
-        cmd.append(f"--proxy-server={proxy}")
-
     try:
         subprocess.Popen(
-            cmd,
+            ["chrome", f"--user-data-dir={profile_dir}",
+             "--disable-background-timer-throttling",
+             "--disable-backgrounding-occluded-windows",
+             "--disable-renderer-backgrounding"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
@@ -174,19 +149,19 @@ def restart_chrome(account):
 def coordinated_restart_chrome(worker_id, task_type, account):
     """协调版本的 Chrome 重启"""
     log.info("[%s_%s] Requesting Chrome switch...", worker_id, task_type)
-
+    
     # 请求切换（只有主导任务能发起）
     if not request_switch(worker_id, task_type):
         log.info("[%s_%s] Not leader or switch already pending", worker_id, task_type)
         return False
-
+    
     # # 等待其他任务完成
     # log.info("[%s_%s] Waiting for other workers to finish...", worker_id, task_type)
     # if not wait_for_switch_complete(worker_id, task_type, timeout=300):
     #     log.warning("[%s_%s] Timeout waiting for workers", worker_id, task_type)
     #     # 超时时也尝试切换
     #     pass
-
+    
     # 执行切换
     log.info("[%s_%s] Executing Chrome restart...", worker_id, task_type)
     restart_chrome(account)
@@ -351,10 +326,10 @@ def run_loop(worker_id, task_type, restart_after):
     """主循环"""
     # 初始化共享目录
     init_shared_dir()
-
+    
     # 设置重启函数到协调模块
     set_restart_chrome_func(restart_chrome)
-
+    
     # 注册工作进程，获取是否为主导
     is_leader = register_worker(worker_id, task_type)
     log.info("Worker %s registered, is_leader=%s", worker_id, is_leader)
@@ -453,7 +428,7 @@ def run_loop(worker_id, task_type, restart_after):
 
             # 修复：拿到任务瞬间立刻设为 BUSY，防止竞态条件导致 Leader 误判并切杀 Chrome
             update_status(worker_id, task_type, WorkerStatus.BUSY.value, task_count_since_restart)
-
+            
             report_start(task_id, worker_id)
 
             success = process_task(task, worker_id, current_account, task_type)

@@ -77,12 +77,15 @@ def report_result(task_id: str, status: int, worker_id: str) -> None:
 # ---------- Prompt Parsing ----------
 
 
-def parse_prompt(prompt: str) -> tuple[str, dict]:
+def parse_prompt(prompt: str) -> tuple[str, dict, str | None]:
     """
-    从 prompt 中提取执行命令和回调配置。
-    返回 (command, callback_config)
+    从 prompt 中提取执行命令、回调配置、和需要写入文件的JSON数据。
+    返回 (command, callback_config, content_file_path)
+    content_file_path 为 None 表示不需要写文件。
     """
-    # 提取末尾的 JSON 配置块（最后一个独立的 JSON 对象）
+    import tempfile
+
+    # 1. 提取末尾的 JSON 配置块（callback config）
     json_match = re.search(r"\{[^{}]*\"type\"\s*:\s*\"[^\"]+\"[^{}]*\}", prompt)
     callback_config = {}
     if json_match:
@@ -91,19 +94,45 @@ def parse_prompt(prompt: str) -> tuple[str, dict]:
         except json.JSONDecodeError:
             log.error("Failed to parse callback config from prompt")
 
-    # 命令是 prompt 中 JSON 配置块之前的部分
+    # 2. 提取 references JSON 数组（写入临时文件）
+    # 格式固定: opencli doubao references "[{...}]" -f json --reuse
+    content_file_path = None
+    prefix = 'opencli doubao references "'
+    suffix = '" -f json --reuse'
+    if prefix in prompt and suffix in prompt:
+        start = prompt.index(prefix) + len(prefix)
+        end = prompt.index(suffix, start)
+        json_str = "[" + prompt[start:end] + "]"  # 加上外层括号
+        # 写入临时文件
+        temp_file = tempfile.NamedTemporaryFile(
+            mode='w',
+            encoding='utf-8',
+            suffix='.txt',
+            delete=False,
+            dir=os.environ.get('TEMP', os.environ.get('TMP', os.path.expanduser('~')))
+        )
+        temp_file.write(json_str)
+        temp_file.close()
+        content_file_path = temp_file.name
+        log.info("Content written to temp file: %s (size: %d)",
+                 content_file_path, os.path.getsize(content_file_path))
+
+    # 3. 提取命令部分
     command_section = prompt[: json_match.start()].strip() if json_match else prompt
 
-    # 从自然语言描述中提取真实命令
-    # 匹配 "执行命令 xxx" 模式，提取 xxx 部分
+    # 4. 构造最终命令（替换 JSON 数组为 --content-file）
     cmd_match = re.search(r"执行命令\s+(.+?)\s+(?:生成结果文件|；|;)", command_section)
     if cmd_match:
         command = cmd_match.group(1).strip()
     else:
-        # 兜底：取分号前第一句
         command = command_section.split(";")[0].split("；")[0].strip()
 
-    return command, callback_config
+    # 5. 替换命令中的 JSON 数组为 --content-file
+    if content_file_path:
+        normalized_path = content_file_path.replace("\\", "/")
+        command = f'opencli doubao references --content-file "{normalized_path}" -f json --reuse'
+
+    return command, callback_config, content_file_path
 
 
 # ---------- Command Execution ----------
@@ -191,11 +220,13 @@ def process_task(task: dict, worker_id: str) -> bool:
     """处理单个任务，返回是否成功"""
     task_id = task["id"]
     prompt = task.get("prompt", "")
+    content_file = None
 
     try:
-        command, callback_config = parse_prompt(prompt)
+        command, callback_config, content_file = parse_prompt(prompt)
         log.info("Parsed command: %s", command)
         log.info("Callback config: %s", callback_config)
+        log.info("Content file: %s", content_file)
 
         callback_url = callback_config.get("url", "")
         callback_task_id = callback_config.get("taskId", task_id)
@@ -209,32 +240,34 @@ def process_task(task: dict, worker_id: str) -> bool:
         elif result_ref and isinstance(result_ref, str):
             result_data = json.loads(result_ref)
         else:
-            result_data = []
+            # result_data = []
+            result_data = result_ref
 
-        # 检查是否有有效的 references
-        has_empty_references = check_references_empty(result_data)
+        # # 检查是否有有效的 references
+        # has_empty_references = check_references_empty(result_data)
 
-        # 根据是否有有效结果决定回调状态
-        if has_empty_references:
-            # 没有有效的 references，回调状态为 failed
-            callback_payload = {
-                "taskId": callback_task_id,
-                "type": "analysis",
-                "status": "failed",
-                "result": result_data,
-                "workerId": worker_id
-            }
-            success = False
-        else:
-            # 有有效的 references，正常回调
-            callback_payload = {
-                "taskId": callback_task_id,
-                "type": "analysis",
-                "status": "completed",
-                "result": result_data,
-                "workerId": worker_id
-            }
-            success = True
+        # # 根据是否有有效结果决定回调状态
+        # if has_empty_references:
+        #     # 没有有效的 references，回调状态为 failed
+        #     callback_payload = {
+        #         "taskId": callback_task_id,
+        #         "type": "analysis",
+        #         "status": "failed",
+        #         "result": result_data,
+        #         "workerId": worker_id
+        #     }
+        #     success = False
+        # else:
+        # 有有效的 references，正常回调
+        log.info("Callback result_data: %s", result_data)
+        callback_payload = {
+            "taskId": callback_task_id,
+            "type": "analysis",
+            "status": "completed",
+            "result": result_data,
+            "workerId": worker_id
+        }
+        success = True
 
         # 发送回调
         if callback_url:
@@ -247,6 +280,15 @@ def process_task(task: dict, worker_id: str) -> bool:
     except Exception as e:
         log.error("Task processing failed: %s", str(e))
         return False
+
+    finally:
+        # 清理临时文件
+        if content_file and os.path.exists(content_file):
+            try:
+                os.unlink(content_file)
+                log.info("Temp file cleaned: %s", content_file)
+            except Exception as e:
+                log.warning("Failed to clean temp file: %s", e)
 
 
 def check_references_empty(result_data) -> bool:

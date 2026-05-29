@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Task Runner - 带进程协调的任务处理脚本
 流程：拉取任务 -> 上报开始 -> 执行命令 -> 发送回调 -> 上报结果
@@ -138,10 +139,7 @@ def restart_chrome(account):
     try:
         subprocess.Popen(
             [
-                # ======================
-                # 直接用你设置的 alias：chrome
-                # ======================
-                "chrome",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                 f"--user-data-dir={profile_dir}",
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",

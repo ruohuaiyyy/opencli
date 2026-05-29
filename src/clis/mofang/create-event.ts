@@ -73,98 +73,53 @@ cli({
     }
 
     // ── Step 2: Select business line (业务线) ───────────────────────────────
-    const bizLineSelected = await page.evaluate(`
+    // Ant Design Select listens to mousedown (not click), so we must dispatch
+    // MouseEvent('mousedown') rather than calling .click().
+    await page.wait({ time: 1.5 });
+
+    // Step A: open the dropdown via mousedown on .ant-select-selector
+    await page.evaluate(`
+      () => {
+        const firstSelect = document.querySelector('.ant-select');
+        if (!firstSelect) throw new Error('找不到业务线下拉框');
+        const selector = firstSelect.querySelector('.ant-select-selector');
+        if (!selector) throw new Error('找不到选择器');
+        const opts = { bubbles: true, cancelable: true, view: window };
+        selector.dispatchEvent(new MouseEvent('mousedown', opts));
+        selector.dispatchEvent(new MouseEvent('mouseup',   opts));
+        selector.dispatchEvent(new MouseEvent('click',     opts));
+      }
+    `);
+
+    // Step B: wait for React portal to render
+    await page.wait({ time: 2 });
+
+    // Step C: find visible option by text and click it (also via mousedown)
+    const bizClickResult = await page.evaluate(`
       () => {
         const target = ${JSON.stringify(businessLine)};
-
-        // Open dropdown by finding the visible select with "请选择"
-        const selects = document.querySelectorAll('.ant-select');
-        let bizSelect = null;
-        for (const s of selects) {
-          // First select that shows "请选择" is the business line selector
-          if (s.textContent.includes('请选择') && s.offsetParent !== null) {
-            bizSelect = s;
-            break;
-          }
+        const allElements = document.querySelectorAll('*');
+        for (let i = allElements.length - 1; i >= 0; i--) {
+          const el = allElements[i];
+          const text = (el.textContent || '').trim();
+          if (!text || text.indexOf(target) === -1) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const opts = { bubbles: true, cancelable: true, view: window };
+          el.dispatchEvent(new MouseEvent('mousedown', opts));
+          el.dispatchEvent(new MouseEvent('mouseup',   opts));
+          el.dispatchEvent(new MouseEvent('click',     opts));
+          return { ok: true, value: target };
         }
-        if (!bizSelect) return { ok: false, error: '找不到业务线下拉框' };
-
-        // Dispatch proper mouse events for React compatibility
-        const rect = bizSelect.getBoundingClientRect();
-        const cx = rect.left + rect.width / 2;
-        const cy = rect.top + rect.height / 2;
-        const mousedown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
-        const mouseup = new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
-        const click = new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy });
-        bizSelect.dispatchEvent(mousedown);
-        bizSelect.dispatchEvent(mouseup);
-        bizSelect.dispatchEvent(click);
-        return { ok: true };
+        return { ok: false, error: '找不到业务线选项: ' + target };
       }
     `);
-    if (!bizLineSelected.ok) {
-      throw new Error(bizLineSelected.error || '业务线选择失败');
+    if (!bizClickResult.ok) {
+      throw new Error(bizClickResult.error || '业务线选择失败');
     }
 
-    // Poll for dropdown options to render (React portal, async by nature)
-    await page.wait({ time: 1 });
-    const bizLineChosen = await page.evaluate(`
-      () => {
-        const target = ${JSON.stringify(businessLine)};
-
-        // Poll: search body-level portal divs for the option text
-        const findOption = () => {
-          const bodyDivs = document.body.children;
-          for (let i = 0; i < bodyDivs.length; i++) {
-            const div = bodyDivs[i];
-            const style = window.getComputedStyle(div);
-            // Portal divs have high z-index and absolute/fixed positioning
-            if (style.position === 'absolute' || style.position === 'fixed') {
-              const allTexts = div.textContent || '';
-              if (!allTexts.includes(target)) continue;
-
-              // Find the specific element with matching text and click it
-              const options = div.querySelectorAll([
-                '.rc-virtual-list .ant-select-item',
-                '.rc-virtual-list [class*="item"]',
-                'div[role="option"]',
-                'li[role="option"]',
-                '[class*="select-item"]',
-                '[class*="select"] div, [class*="select"] span',
-                'div, span, li'
-              ].join(', '));
-
-              for (const opt of options) {
-                const t = (opt.textContent || '').trim();
-                if (t === target && opt.offsetParent !== null) {
-                  opt.click();
-                  return { ok: true, value: target };
-                }
-              }
-
-              // Broader: find leaf text node with target and click parent
-              const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT, null);
-              let node;
-              while (node = walker.nextNode()) {
-                if (node.textContent.trim() === target) {
-                  const parent = node.parentElement;
-                  if (parent) {
-                    parent.click();
-                    return { ok: true, value: target };
-                  }
-                }
-              }
-            }
-          }
-          return null;
-        };
-
-        return findOption() || { ok: false, error: '找不到业务线选项: ' + target + '，请确认业务线名称是否正确' };
-      }
-    `);
-    if (!bizLineChosen.ok) {
-      throw new Error(bizLineChosen.error || '业务线选择失败');
-    }
     await page.wait({ time: 1 });
 
     // ── Step 3: Fill event code ─────────────────────────────────────────────
@@ -304,34 +259,46 @@ cli({
 
     // ── Step 9: Set frequency control (optional, has default) ───────────────
     if (frequency && frequency !== '活动期间仅一次') {
-      // Open frequency dropdown
+      // Step A: open the frequency dropdown via mousedown
       await page.evaluate(`
         () => {
           const selects = document.querySelectorAll('.ant-select');
           for (const s of selects) {
             if (s.textContent.includes('期间仅一次') || s.textContent.includes('频次')) {
-              s.click();
+              const selector = s.querySelector('.ant-select-selector');
+              if (!selector) return false;
+              const opts = { bubbles: true, cancelable: true, view: window };
+              selector.dispatchEvent(new MouseEvent('mousedown', opts));
+              selector.dispatchEvent(new MouseEvent('mouseup',   opts));
+              selector.dispatchEvent(new MouseEvent('click',     opts));
               return true;
             }
           }
           return false;
         }
       `);
-      await page.wait({ time: 1 });
-      // Select the desired frequency option using TreeWalker
+
+      // Step B: wait for the portal to render
+      await page.wait({ time: 2 });
+
+      // Step C: find visible option by text and click it (also via mousedown)
       await page.evaluate(`
         () => {
           const target = ${JSON.stringify(frequency)};
-          const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
-          let node;
-          while (node = walker.nextNode()) {
-            if (node.textContent.trim() === target) {
-              const parent = node.parentElement;
-              if (parent && parent.offsetParent !== null) {
-                parent.click();
-                return true;
-              }
-            }
+          const allElements = document.querySelectorAll('*');
+          for (let i = allElements.length - 1; i >= 0; i--) {
+            const el = allElements[i];
+            const text = (el.textContent || '').trim();
+            if (!text || text.indexOf(target) === -1) continue;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden') continue;
+            const rect = el.getBoundingClientRect();
+            if (rect.width === 0 || rect.height === 0) continue;
+            const opts = { bubbles: true, cancelable: true, view: window };
+            el.dispatchEvent(new MouseEvent('mousedown', opts));
+            el.dispatchEvent(new MouseEvent('mouseup',   opts));
+            el.dispatchEvent(new MouseEvent('click',     opts));
+            return true;
           }
           return false;
         }
@@ -372,61 +339,99 @@ cli({
 });
 
 /**
- * Set a date picker field. Opens the calendar, sets the date via JS.
+ * Set a date picker field by typing the datetime string and clicking OK.
+ * The input accepts format like "2026-05-29 05:06:06".
  */
 async function setDatePicker(
   page: IPage,
   labelKeyword: string,
   dateStr: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  return page.evaluate(`
+  // Step 1: focus the input, set value, and dispatch events
+  const setResult = await page.evaluate(`
     (() => {
       const label = ${JSON.stringify(labelKeyword)};
       const dateStr = ${JSON.stringify(dateStr)};
 
-      // Find the date input by looking for label "开始" or "结束"
-      const dateInputs = document.querySelectorAll('input[placeholder*="日期"], input[readonly]');
-      for (const input of dateInputs) {
-        const prev = input.previousElementSibling;
-        const parent = input.parentElement?.parentElement;
+      // Strategy: find input by id (beginDate/endDate) or by label proximity
+      let input = null;
 
-        let labelText = '';
-        if (prev && prev.textContent) labelText = prev.textContent;
-        if (parent && parent.textContent && parent.textContent.includes(label)) {
-          labelText = parent.textContent;
-        }
-
-        if (labelText.includes(label) && input.offsetParent !== null) {
-          // Open date picker by clicking
-          input.click();
-          return { ok: true };
-        }
+      // 1) Try id directly
+      if (label === '开始') {
+        input = document.getElementById('beginDate');
+      } else if (label === '结束') {
+        input = document.getElementById('endDate');
       }
 
-      // Fallback: set value directly on the input
-      const allInputs = document.querySelectorAll('input[type="text"], input[type=""]');
-      for (const input of allInputs) {
-        const placeholder = (input.getAttribute('placeholder') || '').trim();
-        if (placeholder.includes('日期') && input.offsetParent !== null) {
-          const parent = input.closest('div[class*="form-item"], div[style*="margin"]');
-          if (parent && parent.textContent.includes(label)) {
-            const nativeSetter = Object.getOwnPropertyDescriptor(
-              window.HTMLInputElement.prototype, 'value'
-            )?.set;
-            if (nativeSetter) {
-              nativeSetter.call(input, dateStr);
-            } else {
-              input.value = dateStr;
-            }
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-            input.dispatchEvent(new Event('change', { bubbles: true }));
-            input.dispatchEvent(new Event('blur', { bubbles: true }));
-            return { ok: true };
+      // 2) Fallback: find by placeholder and label text
+      if (!input) {
+        const allInputs = document.querySelectorAll('input[placeholder*="日期"]');
+        for (const el of allInputs) {
+          const wrapper = el.closest('div');
+          const labelEl = wrapper?.previousElementSibling || wrapper?.parentElement?.querySelector('label, span, div');
+          const labelText = (labelEl?.textContent || '').trim();
+          if (labelText.includes(label) && el.offsetParent !== null) {
+            input = el;
+            break;
           }
         }
       }
 
-      return { ok: false, error: '找不到' + label + '时间输入框' };
+      if (!input) {
+        return { ok: false, error: '找不到' + label + '时间输入框' };
+      }
+
+      // Focus the input to open the picker dropdown
+      const opts = { bubbles: true, cancelable: true, view: window };
+      input.dispatchEvent(new MouseEvent('mousedown', opts));
+      input.dispatchEvent(new MouseEvent('mouseup', opts));
+      input.dispatchEvent(new MouseEvent('click', opts));
+
+      // Set the value directly
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype, 'value'
+      )?.set;
+      if (nativeSetter) {
+        nativeSetter.call(input, dateStr);
+      } else {
+        input.value = dateStr;
+      }
+
+      // Dispatch input/change events so React picks up the new value
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+
+      return { ok: true };
     })()
   `);
+
+  if (!setResult.ok) {
+    return setResult;
+  }
+
+  // Step 2: wait for the picker dropdown to render, then click OK
+  await page.wait({ time: 1.5 });
+
+  const clickOkResult = await page.evaluate(`
+    (() => {
+      const dropdowns = document.querySelectorAll('.ant-picker-dropdown');
+      if (dropdowns.length === 0) {
+        return { ok: true }; // dropdown already closed, nothing to do
+      }
+      // Click the OK button on all visible dropdowns
+      for (const dropdown of dropdowns) {
+        const okBtn = dropdown.querySelector('.ant-picker-ok button');
+        if (okBtn) {
+          const opts = { bubbles: true, cancelable: true, view: window };
+          okBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+          okBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+          okBtn.dispatchEvent(new MouseEvent('click', opts));
+        }
+      }
+      return { ok: true };
+    })()
+  `);
+
+  return clickOkResult;
 }

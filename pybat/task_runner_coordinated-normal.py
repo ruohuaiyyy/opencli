@@ -53,22 +53,7 @@ ACCOUNT_LIMIT_TASK_TYPES = {"opencli-analysis-doubao", "opencli-analysis-doubaoT
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
-PROXY_FILE = Path.home() / ".opencli" / "accounts" / "proxy.json"
 PROFILES_DIR = Path.home() / ".opencli" / "profiles"
-
-
-def get_proxy(account):
-    """根据账号获取代理配置，无代理配置则返回 None"""
-    try:
-        if PROXY_FILE.exists():
-            proxies = json.loads(PROXY_FILE.read_text(encoding="utf-8"))
-            proxy = proxies.get(account)
-            if proxy:
-                log.info("Using proxy for account %s: %s", account, proxy)
-                return proxy
-    except Exception as e:
-        log.warning("Failed to read proxy config: %s", e)
-    return None
 
 
 def get_doubao_accounts():
@@ -144,22 +129,12 @@ def restart_chrome(account):
 
     profile_dir = PROFILES_DIR / account
     profile_dir.mkdir(parents=True, exist_ok=True)
-
-    proxy = get_proxy(account)
-
-    cmd = [
-        "chrome",
-        f"--user-data-dir={profile_dir}",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-renderer-backgrounding",
-    ]
-    if proxy:
-        cmd.append(f"--proxy-server={proxy}")
-
     try:
         subprocess.Popen(
-            cmd,
+            ["chrome", f"--user-data-dir={profile_dir}",
+             "--disable-background-timer-throttling",
+             "--disable-backgrounding-occluded-windows",
+             "--disable-renderer-backgrounding"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,

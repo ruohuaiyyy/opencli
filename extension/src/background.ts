@@ -236,6 +236,8 @@ async function handleCommand(cmd: Command): Promise<Result> {
         return await handleCloseWindow(cmd, workspace);
       case 'sessions':
         return await handleSessions(cmd);
+      case 'mouse':
+        return await handleMouse(cmd, workspace);
       default:
         return { id: cmd.id, ok: false, error: `Unknown action: ${cmd.action}` };
     }
@@ -572,6 +574,22 @@ async function handleSessions(cmd: Command): Promise<Result> {
     idleMsRemaining: Math.max(0, session.idleDeadlineAt - now),
   })));
   return { id: cmd.id, ok: true, data };
+}
+
+async function handleMouse(cmd: Command, workspace: string): Promise<Result> {
+  const tabId = await resolveTabId(cmd.tabId, workspace);
+  try {
+    await executor.dispatchMouseEvent(
+      tabId,
+      cmd.mouseType || 'mouseMoved',
+      cmd.x ?? 0,
+      cmd.y ?? 0,
+      cmd.button || 'left',
+    );
+    return { id: cmd.id, ok: true, data: 'mouse event dispatched' };
+  } catch (err) {
+    return { id: cmd.id, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export const __test__ = {

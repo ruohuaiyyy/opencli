@@ -147,6 +147,28 @@ export async function screenshot(
   }
 }
 
+/**
+ * Dispatch a mouse event via CDP Input.dispatchMouseEvent.
+ * Used for drag-and-drop and other mouse interactions that synthetic JS events cannot trigger.
+ */
+export async function dispatchMouseEvent(
+  tabId: number,
+  type: 'mousePressed' | 'mouseReleased' | 'mouseMoved',
+  x: number,
+  y: number,
+  button: 'left' | 'right' | 'middle' = 'left',
+): Promise<void> {
+  await ensureAttached(tabId);
+
+  await chrome.debugger.sendCommand({ tabId }, 'Input.dispatchMouseEvent', {
+    type,
+    x,
+    y,
+    button,
+    clickCount: type === 'mousePressed' || type === 'mouseReleased' ? 1 : 0,
+  });
+}
+
 export async function detach(tabId: number): Promise<void> {
   if (!attached.has(tabId)) return;
   attached.delete(tabId);

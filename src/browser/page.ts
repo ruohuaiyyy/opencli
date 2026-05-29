@@ -284,6 +284,37 @@ export class Page implements IPage {
     const result = await this.evaluate(generateReadInterceptedJs('__opencli_xhr'));
     return Array.isArray(result) ? result : [];
   }
+
+  async mouseDown(x: number, y: number, button: 'left' | 'right' | 'middle' = 'left'): Promise<void> {
+    await sendCommand('mouse', { mouseType: 'mousePressed', x, y, button, ...this._cmdOpts() });
+  }
+
+  async mouseUp(x: number, y: number, button: 'left' | 'right' | 'middle' = 'left'): Promise<void> {
+    await sendCommand('mouse', { mouseType: 'mouseReleased', x, y, button, ...this._cmdOpts() });
+  }
+
+  async mouseMove(x: number, y: number): Promise<void> {
+    await sendCommand('mouse', { mouseType: 'mouseMoved', x, y, button: 'left', ...this._cmdOpts() });
+  }
+
+  async mouseDrag(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    button: 'left' | 'right' | 'middle' = 'left',
+  ): Promise<void> {
+    await sendCommand('mouse', { mouseType: 'mouseMoved', x: fromX, y: fromY, button, ...this._cmdOpts() });
+    await sendCommand('mouse', { mouseType: 'mousePressed', x: fromX, y: fromY, button, ...this._cmdOpts() });
+    // Intermediate moves for smoother drag
+    const steps = 5;
+    for (let i = 1; i <= steps; i++) {
+      const ix = fromX + (toX - fromX) * (i / steps);
+      const iy = fromY + (toY - fromY) * (i / steps);
+      await sendCommand('mouse', { mouseType: 'mouseMoved', x: ix, y: iy, button, ...this._cmdOpts() });
+    }
+    await sendCommand('mouse', { mouseType: 'mouseReleased', x: toX, y: toY, button, ...this._cmdOpts() });
+  }
 }
 
 // (End of file)

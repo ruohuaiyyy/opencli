@@ -66,4 +66,8 @@ export interface IPage {
   getInterceptedRequests(): Promise<any[]>;
   screenshot(options?: ScreenshotOptions): Promise<string>;
   closeWindow?(): Promise<void>;
+  mouseDown?(x: number, y: number, button?: 'left' | 'right' | 'middle'): Promise<void>;
+  mouseUp?(x: number, y: number, button?: 'left' | 'right' | 'middle'): Promise<void>;
+  mouseMove?(x: number, y: number): Promise<void>;
+  mouseDrag?(fromX: number, fromY: number, toX: number, toY: number, button?: 'left' | 'right' | 'middle'): Promise<void>;
 }
