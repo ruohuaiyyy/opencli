@@ -342,7 +342,7 @@ async function closeDrawer(page: IPage): Promise<void> {
     }
   `);
 
-    // Wait for drawer to close with polling
+  // Wait for drawer to close with polling
   let drawerMaxWait = 3000;
   let drawerInterval = 100;
   let drawerWaited = 0;
@@ -581,11 +581,11 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
             rowWaited += rowInterval;
           }
 
-          // Fill children in the newly added row
+                   // Fill children in the newly added row
           if (rowConfig.children) {
             for (let ci = 0; ci < rowConfig.children.length; ci++) {
               const child = rowConfig.children[ci];
-              await fillChildField(page, child);
+              await fillChildField(page, child, ri, ci);
               await page.wait({ time: 0.3 });
             }
           }
@@ -614,42 +614,28 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
  * Uses placeholder matching since dynamic rows don't have stable IDs.
  * For select/search types in children: opens dropdown then uses polling.
  */
-async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
+async function fillChildField(page: IPage, child: FieldConfig, rowIndex: number, childIndex: number): Promise<void> {
   if (child.type === 'text' || child.type === 'textarea') {
     await page.evaluate(`
       (() => {
         var childName = ${JSON.stringify(child.name)};
         var childValue = ${JSON.stringify(child.value ?? '')};
+        var childIdx = ${childIndex};
         var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
         if (!drawer) return;
 
-        // Strategy 1: Find by label text (same as parent fields)
+        // Find all items matching the label, then pick the childIdx-th one
+        var matchedItems = [];
         var items = drawer.querySelectorAll('.ant-form-item');
         for (var item of items) {
           var labelEl = item.querySelector('label');
           var labelText = labelEl ? labelEl.textContent.trim() : '';
-          if (labelText !== childName) continue;
-          var inp = item.querySelector('input, textarea');
-          if (!inp) continue;
-          var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-          if (nativeSetter) { nativeSetter.call(inp, childValue); }
-          else { inp.value = childValue; }
-          inp.dispatchEvent(new Event('input', { bubbles: true }));
-          inp.dispatchEvent(new Event('change', { bubbles: true }));
-          return;
+          if (labelText === childName) matchedItems.push(item);
         }
-
-        // Strategy 2: Find by placeholder (for dynamic rows)
-        var allInputs = drawer.querySelectorAll('input, textarea');
-        for (var i = allInputs.length - 1; i >= 0; i--) {
-          var inp = allInputs[i];
-          // Fixed operator precedence: use parentheses properly
-          var placeholderMatch = (inp.placeholder === childName);
-          var idNameMatch = (inp.id && inp.id.endsWith('_name') && childName === '属性名');
-          var idDescMatch = (inp.id && inp.id.endsWith('_desc') && childName === '属性描述');
-          var idTypeMatch = (inp.id && inp.id.endsWith('_type') && childName === '值类型');
-
-          if (placeholderMatch || idNameMatch || idDescMatch || idTypeMatch) {
+        var targetItem = matchedItems[childIdx];
+        if (targetItem) {
+          var inp = targetItem.querySelector('input, textarea');
+          if (inp) {
             var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (nativeSetter) { nativeSetter.call(inp, childValue); }
             else { inp.value = childValue; }
@@ -659,26 +645,22 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
           }
         }
 
-        // Strategy 3: Find by id pattern params_*_{name,desc,type}
+        // Fallback: find by id pattern params_*_{name,desc,type,value}
         var allEls = drawer.querySelectorAll('[id]');
-        for (var el of allEls) {
-          var id = el.id;
-          // Check various id patterns
-          var matches = false;
-          if (id) {
-            if (id.endsWith('_name')) matches = (childName === '属性名');
-            else if (id.endsWith('_desc')) matches = (childName === '属性描述');
-            else if (id.endsWith('_type')) matches = (childName === '值类型');
-            else if (id.endsWith('_value')) matches = (childName === '属性值');
-          }
-          if (matches) {
-            var inp2 = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input, textarea');
-            if (inp2 && (inp2.tagName === 'INPUT' || inp2.tagName === 'TEXTAREA')) {
-              var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-              if (nativeSetter) { nativeSetter.call(inp2, childValue); }
-              else { inp2.value = childValue; }
-              inp2.dispatchEvent(new Event('input', { bubbles: true }));
-              inp2.dispatchEvent(new Event('change', { bubbles: true }));
+        var suffixMap = { '属性名': '_name', '属性描述': '_desc', '值类型': '_type', '属性值': '_value' };
+        var suffix = suffixMap[childName];
+        if (suffix) {
+          var targetId = 'params_' + ${rowIndex} + suffix;
+          for (var el of allEls) {
+            if (el.id === targetId) {
+              var inp2 = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input, textarea');
+              if (inp2) {
+                var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                if (ns) { ns.call(inp2, childValue); }
+                else { inp2.value = childValue; }
+                inp2.dispatchEvent(new Event('input', { bubbles: true }));
+                inp2.dispatchEvent(new Event('change', { bubbles: true }));
+              }
               return;
             }
           }
@@ -687,53 +669,35 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
     `);
   }
 
-  else if (child.type === 'select') {
-    // Generic select handler - finds by label or id pattern
+   else if (child.type === 'select') {
     let childName = child.name;
     let childValue = String(child.value ?? '');
 
+    // 通过稳定的 ID 打开下拉框（rowIndex + childName 映射到 ID）
+    var idMap: Record<string, string> = {
+      '值类型': '_type',
+      '属性名': '_name',
+      '属性描述': '_desc',
+      '属性值': '_value',
+    };
+    var suffix = idMap[childName] ?? '';
+    var targetId = 'params_' + rowIndex + suffix;
+
     await page.evaluate(`
       (() => {
-        var fieldName = ${JSON.stringify(childName)};
-        var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
-        if (!drawer) return;
-
-        // Strategy1: Find by label text
-        var items = drawer.querySelectorAll('.ant-form-item');
-        for (var item of items) {
-          var labelEl = item.querySelector('label');
-          var labelText = labelEl ? labelEl.textContent.trim() : '';
-          if (labelText !== fieldName) continue;
-
-          // Found label, look for select/ combobox
-          var sel = item.querySelector('.ant-select, [class*="select"], input[role="combobox"]');
-          if (sel) {
-            var opts = { bubbles: true, cancelable: true, view: window };
-            sel.dispatchEvent(new MouseEvent('mousedown', opts));
-            sel.dispatchEvent(new MouseEvent('mouseup', opts));
-            sel.dispatchEvent(new MouseEvent('click', opts));
-            return;
-          }
-        }
-
-        // Strategy 2: Find by id pattern (params_*_type, params_*_name, etc.)
-        var allInputs = drawer.querySelectorAll('input[role="combobox"], .ant-select');
-        for (var i = 0; i < allInputs.length; i++) {
-          var inp = allInputs[i];
-          if (inp.id && (inp.id.endsWith('_type') || inp.id.endsWith('_name') || inp.id.endsWith('_desc'))) {
-            var opts = { bubbles: true, cancelable: true, view: window };
-            inp.dispatchEvent(new MouseEvent('mousedown', opts));
-            inp.dispatchEvent(new MouseEvent('mouseup', opts));
-            inp.dispatchEvent(new MouseEvent('click', opts));
-            return;
-          }
-        }
-      })()
+        var inp = document.getElementById(${JSON.stringify(targetId)});
+        if (!inp) return;
+        var opts = { bubbles: true, cancelable: true, view: window };
+        inp.dispatchEvent(new MouseEvent('mousedown', opts));
+        inp.dispatchEvent(new MouseEvent('mouseup', opts));
+        inp.dispatchEvent(new MouseEvent('click', opts));
+      })
     `);
 
-    await page.wait({ time: 0.3 });
+    // 等待 dropdown 出现后选值
+    // 关键修复：通过 listboxId 直接定位到正确行的 dropdown，不做全局搜索
+    var targetListboxId = targetId + '_list';
 
-    // Wait for dropdown to open, then select option
     let childSelectMaxWait = 5000;
     let childSelectInterval = 100;
     let childSelectWaited = 0;
@@ -742,25 +706,20 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
     while (childSelectWaited < childSelectMaxWait) {
       const found = await page.evaluate(`
         (() => {
-          let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
-          if (!dropdown) {
-            // Try finding options without waiting for dropdown wrapper
-            let options = document.querySelectorAll('[role="option"], .ant-select-item-option-content');
-            for (let opt of options) {
-              if (opt.textContent.trim() === ${JSON.stringify(targetValue)}) {
-                let opts2 = { bubbles: true, cancelable: true, view: window };
-                opt.dispatchEvent(new MouseEvent('mousedown', opts2));
-                opt.dispatchEvent(new MouseEvent('mouseup', opts2));
-                opt.dispatchEvent(new MouseEvent('click', opts2));
-                return true;
-              }
-            }
-            return false;
-          }
-          let options = dropdown.querySelectorAll('[role="option"], .ant-select-item-option-content, .ant-select-item-option');
-          for (let opt of options) {
-            if (opt.textContent.trim() === ${JSON.stringify(targetValue)}) {
-              let opts2 = { bubbles: true, cancelable: true, view: window };
+          var listboxId = ${JSON.stringify(targetListboxId)};
+          var targetVal = ${JSON.stringify(targetValue)};
+          // 通过 listboxId 直接找到对应 dropdown（不用全局 querySelector）
+          var listbox = document.getElementById(listboxId);
+          if (!listbox) return false;
+          var dropdown = listbox.closest('.ant-select-dropdown');
+          if (!dropdown) return false;
+          // 检查 dropdown 是否可见
+          var r = dropdown.getBoundingClientRect();
+          if (r.width === 0 || r.height === 0) return false;
+          var options = dropdown.querySelectorAll('[role="option"], .ant-select-item-option-content, .ant-select-item-option');
+          for (var opt of options) {
+            if (opt.textContent.trim() === targetVal) {
+              var opts2 = { bubbles: true, cancelable: true, view: window };
               opt.dispatchEvent(new MouseEvent('mousedown', opts2));
               opt.dispatchEvent(new MouseEvent('mouseup', opts2));
               opt.dispatchEvent(new MouseEvent('click', opts2));
