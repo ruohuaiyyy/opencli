@@ -283,6 +283,17 @@ cli({
       await page.mouseUp!(pos.canvasX, pos.canvasY);
       await page.wait({ time: 1.5 });
 
+      // DEBUG: check if stale dropdown exists before filling node
+      const beforeFill = await page.evaluate(`
+        () => {
+          let dd = document.querySelector('.ant-select-dropdown');
+          if (!dd) return 'NO_DROPDOWN';
+          let style = window.getComputedStyle(dd);
+          return 'VISIBLE: display=' + style.display + ' visibility=' + style.visibility + ' rect:' + JSON.stringify(dd.getBoundingClientRect());
+        }
+      `);
+      console.log('[DEBUG] Before filling node ' + nodeIdx + ' (' + component + '), dropdown: ' + beforeFill);
+
       // Step 2.2: Fill configuration
       if (fields && fields.length > 0) {
         // New fields-based config (supports 7 types)
@@ -294,8 +305,39 @@ cli({
 
       // Step 2.3: Close drawer (except for the last node — leave it open for review)
       if (nodeIdx < nodes.length - 1) {
+        // DEBUG: check if 下步节点 value was actually rendered before closing
+        const beforeCloseVal = await page.evaluate(`
+          () => {
+            let items = document.querySelectorAll('.ant-form-item');
+            for (let item of items) {
+              let lbl = item.querySelector('label');
+              if (!lbl) continue;
+              let txt = lbl.textContent.trim();
+              if (txt.includes('下步节点') || txt.includes('* 下步节点')) {
+                let selItem = item.querySelector('.ant-select-selection-item');
+                if (selItem) return 'HAS_VALUE: ' + selItem.textContent.trim();
+                let tags = item.querySelectorAll('.ant-tag');
+                if (tags.length > 0) return 'TAGS: ' + Array.from(tags).map(t => t.textContent.trim()).join(', ');
+                return 'NO_VALUE_YET';
+              }
+            }
+            return 'FIELD_NOT_FOUND';
+          }
+        `);
+        console.log('[DEBUG] Before closeDrawer (node ' + nodeIdx + '), 下步节点 value: ' + beforeCloseVal);
         await closeDrawer(page);
       }
+
+      // DEBUG: check if dropdown is still open after closeDrawer
+      const dropdownStillOpen = await page.evaluate(`
+        () => {
+          let dd = document.querySelector('.ant-select-dropdown');
+          if (!dd) return 'NO_DROPDOWN';
+          let style = window.getComputedStyle(dd);
+          return 'VISIBLE: display=' + style.display + ' visibility=' + style.visibility + ' rect:' + JSON.stringify(dd.getBoundingClientRect());
+        }
+      `);
+      console.log('[DEBUG] After closeDrawer (node ' + nodeIdx + '), dropdown state: ' + dropdownStillOpen);
 
       results.push({
         status: '✅ 节点已配置',
@@ -315,34 +357,17 @@ cli({
  * Close the configuration drawer by clicking the close button or pressing Escape.
  * Waits for drawer to actually close before returning.
  */
+/**
+ * Close the drawer by clicking the canvas area (outside the drawer).
+ * This is the normal way mofang closes the drawer and saves the config.
+ */
 async function closeDrawer(page: IPage): Promise<void> {
-  // Try multiple close strategies
-  await page.evaluate(`
-    () => {
-      // Strategy 1: Close button
-      const closeBtn = document.querySelector('.ant-drawer-close, [class*="drawer-close"], .anticon-close, button[class*="close"]');
-      if (closeBtn) {
-        closeBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-        closeBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-        closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return;
-      }
+   // Click a point on the canvas (far left, outside drawer) to close drawer and save
+  // Drawer occupies the right side; canvas is on the left
+  await page.mouseDown!(50, 300);
+  await page.mouseUp!(50, 300);
 
-      // Strategy 2: Click mask/overlay (outside drawer)
-      const mask = document.querySelector('.ant-drawer-mask, [class*="drawer-mask"]');
-      if (mask) {
-        mask.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-        mask.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-        mask.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return;
-      }
-
-      // Strategy 3: Press Escape
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
-    }
-  `);
-
-  // Wait for drawer to close with polling
+  // Wait for drawer to close
   let drawerMaxWait = 3000;
   let drawerInterval = 100;
   let drawerWaited = 0;
@@ -431,6 +456,10 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
       const fieldValue = String(field.value ?? '');
       const fieldName = String(field.name);
 
+      // Multi-select dropdowns (e.g. "下步节点") do NOT auto-close after selection.
+      // We must close them manually before closing the drawer.
+      const isMultiSelect = fieldName.includes('下步节点');
+
       // Strategy 0: Find by label[for] — most direct, works for both wrapped and unwrapped selects
       const inputId = await page.evaluate(`
         (() => {
@@ -490,16 +519,27 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
                   opt.dispatchEvent(new MouseEvent('mousedown', opts2));
                   opt.dispatchEvent(new MouseEvent('mouseup', opts2));
                   opt.dispatchEvent(new MouseEvent('click', opts2));
-                  // Blur the input to force React onChange to flush before drawer closes
-                  var inpEl = document.getElementById(listboxId.replace('_list', ''));
-                  if (inpEl) inpEl.blur();
+                  // Multi-select: click the label text to defocus dropdown and confirm selection
+                  var inpId = listboxId.replace('_list', '');
+                  var lbl = document.querySelector('label[for="' + inpId + '"]');
+                  if (lbl) {
+                    var lblText = lbl.querySelector('.ant-form-item-label label') || lbl;
+                    lblText.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                  }
                   return true;
                 }
               }
               return false;
             })()
           `);
-          if (found) break;
+          if (found) {
+            if (isMultiSelect) {
+              // Multi-select: manually close dropdown before drawer closes
+              await page.pressKey('Escape');
+              await waitForDropdownClosed(page);
+            }
+            break;
+          }
           await page.wait({ time: dropdownInterval / 1000 });
           dropdownWaited += dropdownInterval;
         }
@@ -538,19 +578,35 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
               let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
               if (!dropdown) return false;
               let options = dropdown.querySelectorAll('.ant-select-item-option-content, .ant-select-item-option, [role="option"]');
-              for (let opt of options) {
+                           for (let opt of options) {
                 if (opt.textContent.trim() === ${JSON.stringify(fieldValue)}) {
                   let opts2 = { bubbles: true, cancelable: true, view: window };
                   opt.dispatchEvent(new MouseEvent('mousedown', opts2));
                   opt.dispatchEvent(new MouseEvent('mouseup', opts2));
                   opt.dispatchEvent(new MouseEvent('click', opts2));
+                  // Multi-select: click the label text to defocus dropdown and confirm selection
+                  var allItems = document.querySelectorAll('.ant-form-item');
+                  for (var li of allItems) {
+                    var ll = li.querySelector('label');
+                    if (ll && ll.textContent.trim() === ${JSON.stringify(fieldName)}) {
+                      var llText = ll.querySelector('.ant-form-item-label label') || ll;
+                      llText.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                      break;
+                    }
+                  }
                   return true;
                 }
               }
               return false;
             })()
           `);
-          if (found) break;
+          if (found) {
+            if (isMultiSelect) {
+              await page.pressKey('Escape');
+              await waitForDropdownClosed(page);
+            }
+            break;
+          }
           await page.wait({ time: dropdownInterval / 1000 });
           dropdownWaited += dropdownInterval;
         }
