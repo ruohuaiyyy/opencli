@@ -624,7 +624,7 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
     `);
   }
 
-else if (child.type === 'select') {
+  else if (child.type === 'select') {
     // Value type uses input[role="combobox"] with id params_*_type
     // Options are [role="option"] elements
     await page.evaluate(`
@@ -690,7 +690,7 @@ else if (child.type === 'select') {
           resolve();
         }
       }, interval);
-});
+    });
   }
 }
 
