@@ -313,11 +313,13 @@ cli({
 
 /**
  * Close the configuration drawer by clicking the close button or pressing Escape.
+ * Waits for drawer to actually close before returning.
  */
 async function closeDrawer(page: IPage): Promise<void> {
+  // Try multiple close strategies
   await page.evaluate(`
     () => {
-      // Try close button first
+      // Strategy 1: Close button
       const closeBtn = document.querySelector('.ant-drawer-close, [class*="drawer-close"], .anticon-close, button[class*="close"]');
       if (closeBtn) {
         closeBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
@@ -325,11 +327,62 @@ async function closeDrawer(page: IPage): Promise<void> {
         closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
         return;
       }
-      // Fallback: press Escape
+
+      // Strategy 2: Click mask/overlay (outside drawer)
+      const mask = document.querySelector('.ant-drawer-mask, [class*="drawer-mask"]');
+      if (mask) {
+        mask.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        mask.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        mask.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return;
+      }
+
+      // Strategy 3: Press Escape
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
     }
   `);
-  await page.wait({ time: 0.5 });
+
+    // Wait for drawer to close with polling
+  let drawerMaxWait = 3000;
+  let drawerInterval = 100;
+  let drawerWaited = 0;
+
+  while (drawerWaited < drawerMaxWait) {
+    const isClosed = await page.evaluate(`
+      () => {
+        let drawer = document.querySelector('.ant-drawer-content-wrapper, [class*="drawer-content-wrapper"]');
+        if (!drawer) return true;
+        let style = drawer.getAttribute('style') || '';
+        if (style.includes('display: none') || style.includes('display:none')) return true;
+        return false;
+      }
+    `);
+    if (isClosed) return;
+    await page.wait({ time: drawerInterval / 1000 });
+    drawerWaited += drawerInterval;
+  }
+}
+
+/**
+ * Wait for any open dropdown to close before opening a new one.
+ * Prevents race conditions when multiple select/search fields are processed.
+ */
+async function waitForDropdownClosed(page: IPage): Promise<void> {
+  let maxWait = 2000;
+  let interval = 50;
+  let waited = 0;
+
+  while (waited < maxWait) {
+    const isClosed = await page.evaluate(`
+      () => {
+        let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
+        return !dropdown;
+      }
+    `);
+    if (isClosed) return;
+    await page.wait({ time: interval / 1000 });
+    waited += interval;
+  }
 }
 
 /**
@@ -338,8 +391,8 @@ async function closeDrawer(page: IPage): Promise<void> {
  * This fixes the race condition where multiple select/search fields would conflict.
  */
 async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promise<void> {
-  for (var fieldIdx = 0; fieldIdx < fields.length; fieldIdx++) {
-    var field = fields[fieldIdx];
+  for (let fieldIdx = 0; fieldIdx < fields.length; fieldIdx++) {
+    const field = fields[fieldIdx];
 
     if (field.type === 'text' || field.type === 'textarea') {
       // Fill text/textarea immediately (no async waiting needed)
@@ -372,6 +425,9 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
     }
 
     else if (field.type === 'select' || field.type === 'search') {
+      // Wait for any previous dropdown to close (prevents race condition)
+      await waitForDropdownClosed(page);
+
       // Open dropdown first
       await page.evaluate(`
         (() => {
@@ -387,52 +443,46 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
             if (!sel) return;
             var opts = { bubbles: true, cancelable: true, view: window };
             sel.dispatchEvent(new MouseEvent('mousedown', opts));
+            sel.dispatchEvent(new MouseEvent('mouseup', opts));
             sel.dispatchEvent(new MouseEvent('click', opts));
           }
         })()
       `);
       await page.wait({ time: 0.3 });
 
-      // Wait for dropdown to open, then select option — using polling (NOT setTimeout)
-      await new Promise<void>(function(resolve) {
-        var maxWait = 3000;
-        var interval = 100;
-        var waited = 0;
-        var fieldValue = String(field.value ?? '');
+      // Wait for dropdown to open, then select option — using polling
+      let dropdownMaxWait = 5000;
+      let dropdownInterval = 100;
+      let dropdownWaited = 0;
+      const fieldValue = String(field.value ?? '');
 
-        function tryFind() {
-          var dropdown = document.querySelector('.ant-select-dropdown:not([style*="display:none"]), .ant-select-item-option-selected');
-          if (!dropdown) {
-            // Try another approach: click option by text
-            var options = document.querySelectorAll('.ant-select-item-option-content, .ant-select-selection-item, [class*="option-content"]');
-            for (var opt of options) {
-              if (opt.textContent.trim() === fieldValue) {
-                opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-                opt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                clearInterval(timer);
-                setTimeout(resolve, 200);
+      while (dropdownWaited < dropdownMaxWait) {
+        const found = await page.evaluate(`
+          (() => {
+            let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
+            if (!dropdown) return false;
+            let options = dropdown.querySelectorAll('.ant-select-item-option-content, .ant-select-item-option, [role="option"]');
+            for (let opt of options) {
+              if (opt.textContent.trim() === ${JSON.stringify(fieldValue)}) {
+                let opts2 = { bubbles: true, cancelable: true, view: window };
+                opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+                opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+                opt.dispatchEvent(new MouseEvent('click', opts2));
                 return true;
               }
             }
-          }
-          return false;
-        }
-
-        if (tryFind()) return;
-        var timer = setInterval(function() {
-          waited += interval;
-          if (tryFind()) return;
-          if (waited >= maxWait) {
-            clearInterval(timer);
-            resolve();
-          }
-        }, interval);
-      });
+            return false;
+          })()
+        `);
+        if (found) break;
+        await page.wait({ time: dropdownInterval / 1000 });
+        dropdownWaited += dropdownInterval;
+      }
     }
 
     else if (field.type === 'switch') {
       // Toggle switch
-      var switchValue = field.value === true || field.value === 'true' || field.value === '1';
+      let switchValue = field.value === true || field.value === 'true' || field.value === '1';
       await page.evaluate(`
         (() => {
           var fieldName = ${JSON.stringify(field.name)};
@@ -486,26 +536,10 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
     }
 
     else if (field.type === 'click') {
-      // Click a button (e.g., "确定", "添加数据", "新增参数")
-      await page.evaluate(`
-        (() => {
-          var btnName = ${JSON.stringify(field.name)};
-          var btns = Array.from(document.querySelectorAll('button'));
-          var btn = btns.find(function(b) { return b.textContent.trim() === btnName; });
-          if (!btn) return;
-          var opts = { bubbles: true, cancelable: true, view: window };
-          btn.dispatchEvent(new MouseEvent('mousedown', opts));
-          btn.dispatchEvent(new MouseEvent('mouseup', opts));
-          btn.dispatchEvent(new MouseEvent('click', opts));
-        })()
-      `);
-
       // Handle dynamic rows (click button → new row appears → fill children)
       if (field.rows && field.rows.length > 0) {
-        await page.wait({ time: 0.5 });
-
-        for (var ri = 0; ri < field.rows.length; ri++) {
-          var rowConfig = field.rows[ri];
+        for (let ri = 0; ri < field.rows.length; ri++) {
+          const rowConfig = field.rows[ri];
 
           // Click button to add a new row
           await page.evaluate(`
@@ -522,51 +556,54 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
           `);
 
           // Wait for new row to appear (poll until we detect new input id/placeholder)
-          await new Promise<void>(function(resolve) {
-            var maxWait = 3000;
-            var interval = 100;
-            var waited = 0;
-            var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
-            if (!drawer) { resolve(); return; }
+          let rowMaxWait = 5000;
+          let rowInterval = 100;
+          let rowWaited = 0;
 
-            // Get all inputs before clicking
-            var beforeInputs = Array.from(drawer.querySelectorAll('input, textarea, .ant-select')).map(function(e) {
-              var el = e as HTMLInputElement | HTMLTextAreaElement | { id: string; placeholder?: string };
-              return el.id || (el as { placeholder?: string }).placeholder;
-            });
+          while (rowWaited < rowMaxWait) {
+            const newFound = await page.evaluate(`
+              (() => {
+                let drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
+                if (!drawer) return true;
+                let beforeInputs = Array.from(drawer.querySelectorAll('input, textarea, .ant-select')).map(function(e) {
+                  return e.id || e.placeholder;
+                });
+                let currentInputs = Array.from(drawer.querySelectorAll('input, textarea, .ant-select')).map(function(e) {
+                  return e.id || e.placeholder;
+                });
+                return currentInputs.some(function(id) {
+                  return id && beforeInputs.indexOf(id) === -1;
+                });
+              })()
+            `);
+            if (newFound) break;
+            await page.wait({ time: rowInterval / 1000 });
+            rowWaited += rowInterval;
+          }
 
-            function tryDetect() {
-              var cur = (drawer as Element).querySelectorAll('input, textarea, .ant-select');
-              var currentInputs = Array.from(cur).map(function(e) {
-                var el = e as HTMLInputElement | HTMLTextAreaElement | { id: string; placeholder?: string };
-                return el.id || (el as { placeholder?: string }).placeholder;
-              });
-              // Check if any new id/placeholder appeared
-              var newFound = currentInputs.some(function(id) {
-                return id && beforeInputs.indexOf(id) === -1;
-              });
-              if (newFound || waited >= maxWait) {
-                clearInterval(timer);
-                setTimeout(resolve, 200);
-              }
-            }
-
-            tryDetect();
-            var timer = setInterval(function() {
-              waited += interval;
-              tryDetect();
-            }, interval);
-          });
-
-          // Fill children in the newly added row (use placeholder === name matching)
+          // Fill children in the newly added row
           if (rowConfig.children) {
-            for (var ci = 0; ci < rowConfig.children.length; ci++) {
-              var child = rowConfig.children[ci];
+            for (let ci = 0; ci < rowConfig.children.length; ci++) {
+              const child = rowConfig.children[ci];
               await fillChildField(page, child);
               await page.wait({ time: 0.3 });
             }
           }
         }
+      } else {
+        // No rows: just click the button once (e.g., "确定", "提交")
+        await page.evaluate(`
+          (() => {
+            var btnName = ${JSON.stringify(field.name)};
+            var btns = Array.from(document.querySelectorAll('button'));
+            var btn = btns.find(function(b) { return b.textContent.trim() === btnName; });
+            if (!btn) return;
+            var opts = { bubbles: true, cancelable: true, view: window };
+            btn.dispatchEvent(new MouseEvent('mousedown', opts));
+            btn.dispatchEvent(new MouseEvent('mouseup', opts));
+            btn.dispatchEvent(new MouseEvent('click', opts));
+          })()
+        `);
       }
     }
   }
@@ -585,13 +622,34 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
         var childValue = ${JSON.stringify(child.value ?? '')};
         var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
         if (!drawer) return;
-        // Find the most recently added input by matching placeholder
+
+        // Strategy 1: Find by label text (same as parent fields)
+        var items = drawer.querySelectorAll('.ant-form-item');
+        for (var item of items) {
+          var labelEl = item.querySelector('label');
+          var labelText = labelEl ? labelEl.textContent.trim() : '';
+          if (labelText !== childName) continue;
+          var inp = item.querySelector('input, textarea');
+          if (!inp) continue;
+          var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+          if (nativeSetter) { nativeSetter.call(inp, childValue); }
+          else { inp.value = childValue; }
+          inp.dispatchEvent(new Event('input', { bubbles: true }));
+          inp.dispatchEvent(new Event('change', { bubbles: true }));
+          return;
+        }
+
+        // Strategy 2: Find by placeholder (for dynamic rows)
         var allInputs = drawer.querySelectorAll('input, textarea');
-        // Start from the end (most likely to be the newest row)
         for (var i = allInputs.length - 1; i >= 0; i--) {
           var inp = allInputs[i];
-          if (inp.placeholder === childName || inp.id?.endsWith('_name') && childName === '属性名' ||
-              inp.id?.endsWith('_desc') && childName === '属性描述') {
+          // Fixed operator precedence: use parentheses properly
+          var placeholderMatch = (inp.placeholder === childName);
+          var idNameMatch = (inp.id && inp.id.endsWith('_name') && childName === '属性名');
+          var idDescMatch = (inp.id && inp.id.endsWith('_desc') && childName === '属性描述');
+          var idTypeMatch = (inp.id && inp.id.endsWith('_type') && childName === '值类型');
+
+          if (placeholderMatch || idNameMatch || idDescMatch || idTypeMatch) {
             var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (nativeSetter) { nativeSetter.call(inp, childValue); }
             else { inp.value = childValue; }
@@ -600,15 +658,20 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
             return;
           }
         }
-        // Fallback: find by id pattern params_*_{name,desc}
+
+        // Strategy 3: Find by id pattern params_*_{name,desc,type}
         var allEls = drawer.querySelectorAll('[id]');
         for (var el of allEls) {
           var id = el.id;
-          if (id && (
-              (id.endsWith('_name') && childName === '属性名') ||
-              (id.endsWith('_desc') && childName === '属性描述') ||
-              (id.endsWith('_type') && childName === '值类型')
-          )) {
+          // Check various id patterns
+          var matches = false;
+          if (id) {
+            if (id.endsWith('_name')) matches = (childName === '属性名');
+            else if (id.endsWith('_desc')) matches = (childName === '属性描述');
+            else if (id.endsWith('_type')) matches = (childName === '值类型');
+            else if (id.endsWith('_value')) matches = (childName === '属性值');
+          }
+          if (matches) {
             var inp2 = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input, textarea');
             if (inp2 && (inp2.tagName === 'INPUT' || inp2.tagName === 'TEXTAREA')) {
               var nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
@@ -625,72 +688,92 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
   }
 
   else if (child.type === 'select') {
-    // Value type uses input[role="combobox"] with id params_*_type
-    // Options are [role="option"] elements
+    // Generic select handler - finds by label or id pattern
+    let childName = child.name;
+    let childValue = String(child.value ?? '');
+
     await page.evaluate(`
       (() => {
-        var childName = ${JSON.stringify(child.name)};
-        var childValue = ${JSON.stringify(child.value ?? '')};
+        var fieldName = ${JSON.stringify(childName)};
         var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
         if (!drawer) return;
 
-        // Find the combobox input by id pattern params_*_type
-        var targetInput = null;
-        if (childName === '值类型') {
-          var allInputs = drawer.querySelectorAll('input[role="combobox"]');
-          for (var i = 0; i < allInputs.length; i++) {
-            if (allInputs[i].id.endsWith('_type')) {
-              targetInput = allInputs[i];
-              break;
-            }
+        // Strategy1: Find by label text
+        var items = drawer.querySelectorAll('.ant-form-item');
+        for (var item of items) {
+          var labelEl = item.querySelector('label');
+          var labelText = labelEl ? labelEl.textContent.trim() : '';
+          if (labelText !== fieldName) continue;
+
+          // Found label, look for select/ combobox
+          var sel = item.querySelector('.ant-select, [class*="select"], input[role="combobox"]');
+          if (sel) {
+            var opts = { bubbles: true, cancelable: true, view: window };
+            sel.dispatchEvent(new MouseEvent('mousedown', opts));
+            sel.dispatchEvent(new MouseEvent('mouseup', opts));
+            sel.dispatchEvent(new MouseEvent('click', opts));
+            return;
           }
         }
 
-        if (!targetInput) return;
-
-        // Click the combobox to open dropdown
-        var opts = { bubbles: true, cancelable: true, view: window };
-        targetInput.dispatchEvent(new MouseEvent('mousedown', opts));
-        targetInput.dispatchEvent(new MouseEvent('mouseup', opts));
-        targetInput.dispatchEvent(new MouseEvent('click', opts));
+        // Strategy 2: Find by id pattern (params_*_type, params_*_name, etc.)
+        var allInputs = drawer.querySelectorAll('input[role="combobox"], .ant-select');
+        for (var i = 0; i < allInputs.length; i++) {
+          var inp = allInputs[i];
+          if (inp.id && (inp.id.endsWith('_type') || inp.id.endsWith('_name') || inp.id.endsWith('_desc'))) {
+            var opts = { bubbles: true, cancelable: true, view: window };
+            inp.dispatchEvent(new MouseEvent('mousedown', opts));
+            inp.dispatchEvent(new MouseEvent('mouseup', opts));
+            inp.dispatchEvent(new MouseEvent('click', opts));
+            return;
+          }
+        }
       })()
     `);
-    await page.wait({ time: 0.5 });
 
-    // Select the option by text
-    var childValue = String(child.value ?? '');
-    await new Promise<void>(function(resolve) {
-      var maxWait = 3000;
-      var interval = 100;
-      var waited = 0;
-      var targetValue = childValue;
+    await page.wait({ time: 0.3 });
 
-      function tryFind() {
-        var options = document.querySelectorAll('[role="option"]');
-        for (var opt of options) {
-          if (opt.textContent.trim() === targetValue) {
-            var opts2 = { bubbles: true, cancelable: true, view: window };
-            opt.dispatchEvent(new MouseEvent('mousedown', opts2));
-            opt.dispatchEvent(new MouseEvent('mouseup', opts2));
-            opt.dispatchEvent(new MouseEvent('click', opts2));
-            clearInterval(timer);
-            setTimeout(resolve, 200);
-            return true;
+    // Wait for dropdown to open, then select option
+    let childSelectMaxWait = 5000;
+    let childSelectInterval = 100;
+    let childSelectWaited = 0;
+    const targetValue = childValue;
+
+    while (childSelectWaited < childSelectMaxWait) {
+      const found = await page.evaluate(`
+        (() => {
+          let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
+          if (!dropdown) {
+            // Try finding options without waiting for dropdown wrapper
+            let options = document.querySelectorAll('[role="option"], .ant-select-item-option-content');
+            for (let opt of options) {
+              if (opt.textContent.trim() === ${JSON.stringify(targetValue)}) {
+                let opts2 = { bubbles: true, cancelable: true, view: window };
+                opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+                opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+                opt.dispatchEvent(new MouseEvent('click', opts2));
+                return true;
+              }
+            }
+            return false;
           }
-        }
-        return false;
-      }
-
-      if (tryFind()) return;
-      var timer = setInterval(function() {
-        waited += interval;
-        if (tryFind()) return;
-        if (waited >= maxWait) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, interval);
-    });
+          let options = dropdown.querySelectorAll('[role="option"], .ant-select-item-option-content, .ant-select-item-option');
+          for (let opt of options) {
+            if (opt.textContent.trim() === ${JSON.stringify(targetValue)}) {
+              let opts2 = { bubbles: true, cancelable: true, view: window };
+              opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+              opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+              opt.dispatchEvent(new MouseEvent('click', opts2));
+              return true;
+            }
+          }
+          return false;
+        })()
+      `);
+      if (found) break;
+      await page.wait({ time: childSelectInterval / 1000 });
+      childSelectWaited += childSelectInterval;
+    }
   }
 }
 
