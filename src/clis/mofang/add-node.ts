@@ -624,46 +624,55 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
     `);
   }
 
-  else if (child.type === 'select') {
-    // Open the select dropdown
+else if (child.type === 'select') {
+    // Value type uses input[role="combobox"] with id params_*_type
+    // Options are [role="option"] elements
     await page.evaluate(`
       (() => {
         var childName = ${JSON.stringify(child.name)};
+        var childValue = ${JSON.stringify(child.value ?? '')};
         var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
         if (!drawer) return;
-        // Find by id pattern params_*_type (值类型 uses _type suffix)
-        var typeId = '';
-        var allEls = drawer.querySelectorAll('[id]');
-        for (var el of allEls) {
-          if (el.id.endsWith('_type') && childName === '值类型') {
-            typeId = el.id;
+
+        // Find the combobox input by id pattern params_*_type
+        var targetInput = null;
+        if (childName === '值类型') {
+          var allInputs = drawer.querySelectorAll('input[role="combobox"]');
+          for (var i = 0; i < allInputs.length; i++) {
+            if (allInputs[i].id.endsWith('_type')) {
+              targetInput = allInputs[i];
+              break;
+            }
           }
         }
-        if (!typeId) return;
-        var selEl = document.getElementById(typeId);
-        if (!selEl) return;
-        // Click the select container
-        var container = selEl.closest('.ant-select') || selEl;
+
+        if (!targetInput) return;
+
+        // Click the combobox to open dropdown
         var opts = { bubbles: true, cancelable: true, view: window };
-        container.dispatchEvent(new MouseEvent('mousedown', opts));
-        container.dispatchEvent(new MouseEvent('click', opts));
+        targetInput.dispatchEvent(new MouseEvent('mousedown', opts));
+        targetInput.dispatchEvent(new MouseEvent('mouseup', opts));
+        targetInput.dispatchEvent(new MouseEvent('click', opts));
       })()
     `);
-    await page.wait({ time: 0.3 });
+    await page.wait({ time: 0.5 });
 
-    // Select the matching option with polling
+    // Select the option by text
+    var childValue = String(child.value ?? '');
     await new Promise<void>(function(resolve) {
       var maxWait = 3000;
       var interval = 100;
       var waited = 0;
-      var childValue = String(child.value ?? '');
+      var targetValue = childValue;
 
       function tryFind() {
-        var options = document.querySelectorAll('.ant-select-item-option-content, .ant-select-selection-item, [class*="option-content"]');
+        var options = document.querySelectorAll('[role="option"]');
         for (var opt of options) {
-          if (opt.textContent.trim() === childValue) {
-            opt.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-            opt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          if (opt.textContent.trim() === targetValue) {
+            var opts2 = { bubbles: true, cancelable: true, view: window };
+            opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+            opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+            opt.dispatchEvent(new MouseEvent('click', opts2));
             clearInterval(timer);
             setTimeout(resolve, 200);
             return true;
@@ -681,7 +690,7 @@ async function fillChildField(page: IPage, child: FieldConfig): Promise<void> {
           resolve();
         }
       }, interval);
-    });
+});
   }
 }
 
