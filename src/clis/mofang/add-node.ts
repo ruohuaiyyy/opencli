@@ -428,55 +428,134 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
       // Wait for any previous dropdown to close (prevents race condition)
       await waitForDropdownClosed(page);
 
-      // Open dropdown first
-      await page.evaluate(`
+      const fieldValue = String(field.value ?? '');
+      const fieldName = String(field.name);
+
+      // Strategy 0: Find by label[for] — most direct, works for both wrapped and unwrapped selects
+      const inputId = await page.evaluate(`
         (() => {
-          var fieldName = ${JSON.stringify(field.name)};
+          var fieldName = ${JSON.stringify(fieldName)};
           var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
-          if (!drawer) return;
+          if (!drawer) return null;
           var items = drawer.querySelectorAll('.ant-form-item');
           for (var item of items) {
             var labelEl = item.querySelector('label');
             var labelText = labelEl ? labelEl.textContent.trim() : '';
-            if (labelText !== fieldName) continue;
-            var sel = item.querySelector('.ant-select, [class*="select"]');
-            if (!sel) return;
-            var opts = { bubbles: true, cancelable: true, view: window };
-            sel.dispatchEvent(new MouseEvent('mousedown', opts));
-            sel.dispatchEvent(new MouseEvent('mouseup', opts));
-            sel.dispatchEvent(new MouseEvent('click', opts));
+            // Match label text (strip leading * and trailing :)
+            var cleanLabel = labelText.trim();
+            if (cleanLabel.startsWith('*')) cleanLabel = cleanLabel.substring(1).trim();
+            if (cleanLabel.endsWith(':')) cleanLabel = cleanLabel.substring(0, cleanLabel.length - 1).trim();
+            if (cleanLabel === fieldName || labelText === fieldName) {
+              return labelEl.getAttribute('for');
+            }
           }
+          return null;
         })()
       `);
-      await page.wait({ time: 0.3 });
 
-      // Wait for dropdown to open, then select option — using polling
-      let dropdownMaxWait = 5000;
-      let dropdownInterval = 100;
-      let dropdownWaited = 0;
-      const fieldValue = String(field.value ?? '');
-
-      while (dropdownWaited < dropdownMaxWait) {
-        const found = await page.evaluate(`
+      if (inputId) {
+        // Found inputId via label[for] — use it to open dropdown and build listboxId
+        await page.evaluate(`
           (() => {
-            let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
-            if (!dropdown) return false;
-            let options = dropdown.querySelectorAll('.ant-select-item-option-content, .ant-select-item-option, [role="option"]');
-            for (let opt of options) {
-              if (opt.textContent.trim() === ${JSON.stringify(fieldValue)}) {
-                let opts2 = { bubbles: true, cancelable: true, view: window };
-                opt.dispatchEvent(new MouseEvent('mousedown', opts2));
-                opt.dispatchEvent(new MouseEvent('mouseup', opts2));
-                opt.dispatchEvent(new MouseEvent('click', opts2));
-                return true;
+            var inp = document.getElementById(${JSON.stringify(inputId)});
+            if (!inp) return;
+            var opts = { bubbles: true, cancelable: true, view: window };
+            inp.dispatchEvent(new MouseEvent('mousedown', opts));
+            inp.dispatchEvent(new MouseEvent('mouseup', opts));
+            inp.dispatchEvent(new MouseEvent('click', opts));
+          })
+        `);
+
+        // Poll for option selection via listboxId (no global search)
+        let dropdownMaxWait = 5000;
+        let dropdownInterval = 100;
+        let dropdownWaited = 0;
+        const targetListboxId = inputId + '_list';
+
+        while (dropdownWaited < dropdownMaxWait) {
+          const found = await page.evaluate(`
+            (() => {
+              var listboxId = ${JSON.stringify(targetListboxId)};
+              var targetVal = ${JSON.stringify(fieldValue)};
+              var listbox = document.getElementById(listboxId);
+              if (!listbox) return false;
+              var dropdown = listbox.closest('.ant-select-dropdown');
+              if (!dropdown) return false;
+              var r = dropdown.getBoundingClientRect();
+              if (r.width === 0 || r.height === 0) return false;
+              var options = dropdown.querySelectorAll('[role="option"], .ant-select-item-option-content, .ant-select-item-option');
+              for (var opt of options) {
+                if (opt.textContent.trim() === targetVal) {
+                  var opts2 = { bubbles: true, cancelable: true, view: window };
+                  opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+                  opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+                  opt.dispatchEvent(new MouseEvent('click', opts2));
+                  // Blur the input to force React onChange to flush before drawer closes
+                  var inpEl = document.getElementById(listboxId.replace('_list', ''));
+                  if (inpEl) inpEl.blur();
+                  return true;
+                }
               }
+              return false;
+            })()
+          `);
+          if (found) break;
+          await page.wait({ time: dropdownInterval / 1000 });
+          dropdownWaited += dropdownInterval;
+        }
+        // Wait 1s after selecting option, letting drawer re-render
+        await page.wait({ time: 1 });
+      } else {
+        // Fallback: original label-text + .ant-select strategy
+        await page.evaluate(`
+          (() => {
+            var fieldName = ${JSON.stringify(fieldName)};
+            var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
+            if (!drawer) return;
+            var items = drawer.querySelectorAll('.ant-form-item');
+            for (var item of items) {
+              var labelEl = item.querySelector('label');
+              var labelText = labelEl ? labelEl.textContent.trim() : '';
+              if (labelText !== fieldName) continue;
+              var sel = item.querySelector('.ant-select, [class*="select"]');
+              if (!sel) return;
+              var opts = { bubbles: true, cancelable: true, view: window };
+              sel.dispatchEvent(new MouseEvent('mousedown', opts));
+              sel.dispatchEvent(new MouseEvent('mouseup', opts));
+              sel.dispatchEvent(new MouseEvent('click', opts));
             }
-            return false;
           })()
         `);
-        if (found) break;
-        await page.wait({ time: dropdownInterval / 1000 });
-        dropdownWaited += dropdownInterval;
+        await page.wait({ time: 0.3 });
+
+        let dropdownMaxWait = 5000;
+        let dropdownInterval = 100;
+        let dropdownWaited = 0;
+
+        while (dropdownWaited < dropdownMaxWait) {
+          const found = await page.evaluate(`
+            (() => {
+              let dropdown = document.querySelector('.ant-select-dropdown:not([style*="display: none"]):not([style*="display:none"])');
+              if (!dropdown) return false;
+              let options = dropdown.querySelectorAll('.ant-select-item-option-content, .ant-select-item-option, [role="option"]');
+              for (let opt of options) {
+                if (opt.textContent.trim() === ${JSON.stringify(fieldValue)}) {
+                  let opts2 = { bubbles: true, cancelable: true, view: window };
+                  opt.dispatchEvent(new MouseEvent('mousedown', opts2));
+                  opt.dispatchEvent(new MouseEvent('mouseup', opts2));
+                  opt.dispatchEvent(new MouseEvent('click', opts2));
+                  return true;
+                }
+              }
+              return false;
+            })()
+          `);
+          if (found) break;
+          await page.wait({ time: dropdownInterval / 1000 });
+          dropdownWaited += dropdownInterval;
+        }
+        // Wait 1s after selecting option
+        await page.wait({ time: 1 });
       }
     }
 
