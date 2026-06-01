@@ -39,6 +39,11 @@ interface FieldConfig {
 interface FieldConfigRow {
   /** Children fields to fill in the newly added row */
   children: FieldConfig[];
+  /**
+   * Row mode: if 'context', switch the radio group to "上下文获取" mode
+   * before filling children (the 属性值 field becomes a combobox in context mode).
+   */
+  mode?: string;
 }
 
 interface MofangNode {
@@ -716,7 +721,29 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
             rowWaited += rowInterval;
           }
 
-                   // Fill children in the newly added row
+          // ── FIX: 如果 row 配置了 context mode，先切换到"上下文获取"模式 ──
+          // 切换前：属性值是 textbox；切换后：属性值变成 combobox 下拉框
+          // 必须通过 params_${ri}_type 定位到当前行（第 ri 行）的 radio group，
+          // 而不是全局搜索，否则会点到上一行的 radio group
+          if (rowConfig.mode === 'context') {
+            const targetRgId = 'params_' + ri + '_type';
+            await page.evaluate(`
+              (() => {
+                var rg = document.getElementById(${JSON.stringify(targetRgId)});
+                if (!rg) return;
+                var labels = rg.querySelectorAll('label');
+                for (var lbl of labels) {
+                  if (lbl.textContent.trim() === '上下文获取') {
+                    lbl.click();
+                    return;
+                  }
+                }
+              })()
+            `);
+            await page.wait({ time: 0.3 });
+          }
+
+          // Fill children in the newly added row
           if (rowConfig.children) {
             for (let ci = 0; ci < rowConfig.children.length; ci++) {
               const child = rowConfig.children[ci];
