@@ -24,7 +24,7 @@ import type { IPage } from '../../types.js';
 // FieldConfig Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-type FieldType = 'text' | 'textarea' | 'select' | 'search' | 'click' | 'switch' | 'date';
+type FieldType = 'text' | 'textarea' | 'select' | 'search' | 'click' | 'switch' | 'date' | 'code';
 
 interface FieldConfig {
   type: FieldType;
@@ -673,6 +673,44 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
         })()
       `);
       await page.wait({ time: 0.5 });
+    }
+
+    else if (field.type === 'code') {
+      // Monaco editor: click to focus first, then use Monaco API to set value directly
+      const codeValue = String(field.value ?? '');
+      await page.evaluate(`
+        (() => {
+          var monaco = document.querySelector('.monaco-editor');
+          if (!monaco) return;
+          var opts = { bubbles: true, cancelable: true, view: window };
+          monaco.dispatchEvent(new MouseEvent('mousedown', opts));
+          monaco.dispatchEvent(new MouseEvent('mouseup', opts));
+          monaco.dispatchEvent(new MouseEvent('click', opts));
+        })()
+      `);
+      await page.wait({ time: 0.3 });
+      // Use Monaco's API directly: getEditors()[0].getModel().setValue()
+      const setOk = await page.evaluate(`
+        (() => {
+          var code = ${JSON.stringify(codeValue)};
+          if (!window.monaco) return false;
+          var editors = window.monaco.editor.getEditors();
+          if (!editors || editors.length === 0) return false;
+          var model = editors[0].getModel();
+          if (!model) return false;
+          model.setValue(code);
+          return true;
+        })()
+      `);
+      console.log('[DEBUG] Monaco setValue: ' + setOk);
+      // Verify
+      const afterVal = await page.evaluate(`
+        () => {
+          var lines = document.querySelector('.lines-content');
+          return lines ? lines.textContent.trim() : '';
+        }
+      `);
+      console.log('[DEBUG] Monaco code after setValue: ' + afterVal.substring(0, 80));
     }
 
     else if (field.type === 'click') {
