@@ -34,6 +34,11 @@ interface FieldConfig {
   value?: string | number | boolean;
   /** For click type: clicking adds dynamic rows to fill */
   rows?: FieldConfigRow[];
+  /**
+   * For click type: target section to scope the button search.
+   * e.g. 'output' → restricts button search to the 输出参数 collapse panel.
+   */
+  section?: string;
 }
 
 interface FieldConfigRow {
@@ -720,16 +725,50 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
           const rowConfig = field.rows[ri];
 
           // Click button to add a new row
+          // If section is specified (e.g. 'output'), restrict search to that collapse panel
           await page.evaluate(`
             (() => {
               var btnName = ${JSON.stringify(field.name)};
-              var btns = Array.from(document.querySelectorAll('button'));
-              var btn = btns.find(function(b) { return b.textContent.trim() === btnName; });
-              if (!btn) return;
+              var section = ${JSON.stringify(field.section || '')};
+              var targetBtn = null;
+
+              if (section) {
+                // Find the collapse panel for the target section
+                var sectionLabel = section === 'output' ? '输出参数' : '输入参数';
+                var allBtns = Array.from(document.querySelectorAll('button'));
+                var sectionBtn = null;
+                for (var b of allBtns) {
+                  if (b.textContent.trim().includes(sectionLabel)) {
+                    sectionBtn = b;
+                    break;
+                  }
+                }
+                if (sectionBtn) {
+                  var panel = sectionBtn.closest('.ant-collapse');
+                  if (panel) {
+                    var panelBtns = panel.querySelectorAll('button');
+                    for (var b of panelBtns) {
+                      if (b.textContent.trim() === btnName) {
+                        targetBtn = b;
+                        break;
+                      }
+                    }
+                  }
+                }
+              } else {
+                // Default: find first matching button in the drawer
+                var drawer = document.querySelector('.ant-drawer-body, .ant-form, [class*="config-panel"]');
+                if (drawer) {
+                  var btns = Array.from(drawer.querySelectorAll('button'));
+                  targetBtn = btns.find(function(b) { return b.textContent.trim() === btnName; });
+                }
+              }
+
+              if (!targetBtn) return;
               var opts = { bubbles: true, cancelable: true, view: window };
-              btn.dispatchEvent(new MouseEvent('mousedown', opts));
-              btn.dispatchEvent(new MouseEvent('mouseup', opts));
-              btn.dispatchEvent(new MouseEvent('click', opts));
+              targetBtn.dispatchEvent(new MouseEvent('mousedown', opts));
+              targetBtn.dispatchEvent(new MouseEvent('mouseup', opts));
+              targetBtn.dispatchEvent(new MouseEvent('click', opts));
             })()
           `);
 
@@ -785,7 +824,7 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
           if (rowConfig.children) {
             for (let ci = 0; ci < rowConfig.children.length; ci++) {
               const child = rowConfig.children[ci];
-              await fillChildField(page, child, ri, ci);
+              await fillChildField(page, child, ri, ci, field.section);
               await page.wait({ time: 0.3 });
             }
           }
@@ -814,7 +853,7 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
  * Uses placeholder matching since dynamic rows don't have stable IDs.
  * For select/search types in children: opens dropdown then uses polling.
  */
-async function fillChildField(page: IPage, child: FieldConfig, rowIndex: number, childIndex: number): Promise<void> {
+async function fillChildField(page: IPage, child: FieldConfig, rowIndex: number, childIndex: number, parentSection?: string): Promise<void> {
   if (child.type === 'text' || child.type === 'textarea') {
     await page.evaluate(`
       (() => {
@@ -845,23 +884,30 @@ async function fillChildField(page: IPage, child: FieldConfig, rowIndex: number,
           }
         }
 
-        // Fallback: find by id pattern params_*_{name,desc,type,value}
+        // Fallback: find by id pattern (try multiple prefixes: params_, contexts_, customData_)
         var allEls = drawer.querySelectorAll('[id]');
         var suffixMap = { '属性名': '_name', '属性描述': '_desc', '值类型': '_type', '属性值': '_value' };
+        var section = ${JSON.stringify(child.section || parentSection || '')};
+        var idPrefix = section === 'output' ? 'contexts_' : 'params_';
         var suffix = suffixMap[childName];
         if (suffix) {
-          var targetId = 'params_' + ${rowIndex} + suffix;
-          for (var el of allEls) {
-            if (el.id === targetId) {
-              var inp2 = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input, textarea');
-              if (inp2) {
-                var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-                if (ns) { ns.call(inp2, childValue); }
-                else { inp2.value = childValue; }
-                inp2.dispatchEvent(new Event('input', { bubbles: true }));
-                inp2.dispatchEvent(new Event('change', { bubbles: true }));
+          var prefixes = [idPrefix, 'customData_'];
+          var found = false;
+          outer: for (var pi = 0; pi < prefixes.length && !found; pi++) {
+            var targetId = prefixes[pi] + ${rowIndex} + suffix;
+            for (var el of allEls) {
+              if (el.id === targetId) {
+                var inp2 = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el : el.querySelector('input, textarea');
+                if (inp2) {
+                  var ns = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+                  if (ns) { ns.call(inp2, childValue); }
+                  else { inp2.value = childValue; }
+                  inp2.dispatchEvent(new Event('input', { bubbles: true }));
+                  inp2.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                found = true;
+                break outer;
               }
-              return;
             }
           }
         }
@@ -869,19 +915,36 @@ async function fillChildField(page: IPage, child: FieldConfig, rowIndex: number,
     `);
   }
 
-   else if (child.type === 'select') {
+    else if (child.type === 'select') {
     let childName = child.name;
     let childValue = String(child.value ?? '');
 
     // 通过稳定的 ID 打开下拉框（rowIndex + childName 映射到 ID）
+    // 尝试多个 prefix: params_, contexts_, customData_
     var idMap: Record<string, string> = {
       '值类型': '_type',
       '属性名': '_name',
       '属性描述': '_desc',
       '属性值': '_value',
     };
+    var section = child.section || parentSection || '';
+    var idPrefix = section === 'output' ? 'contexts_' : 'params_';
     var suffix = idMap[childName] ?? '';
-    var targetId = 'params_' + rowIndex + suffix;
+    var prefixes = [idPrefix, 'customData_'];
+
+    var targetId = '';
+    var foundId = false;
+    for (var pi = 0; pi < prefixes.length; pi++) {
+      targetId = prefixes[pi] + rowIndex + suffix;
+      var exists = await page.evaluate(
+        'document.getElementById("' + targetId + '") !== null'
+      );
+      if (exists) {
+        foundId = true;
+        break;
+      }
+    }
+    if (!foundId) return;
 
     await page.evaluate(`
       (() => {
