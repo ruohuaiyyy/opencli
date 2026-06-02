@@ -800,13 +800,20 @@ async function fillFieldsSequentially(page: IPage, fields: FieldConfig[]): Promi
 
           // ── FIX: 如果 row 配置了 context mode，先切换到"上下文获取"模式 ──
           // 切换前：属性值是 textbox；切换后：属性值变成 combobox 下拉框
-          // 必须通过 params_${ri}_type 定位到当前行（第 ri 行）的 radio group，
+          // 必须通过正确的前缀 + rowIndex 定位到当前行的 radio group，
           // 而不是全局搜索，否则会点到上一行的 radio group
+          // 尝试多个 prefix: params_, customData_
           if (rowConfig.mode === 'context') {
-            const targetRgId = 'params_' + ri + '_type';
+            var prefixes = ['params_', 'customData_'];
             await page.evaluate(`
               (() => {
-                var rg = document.getElementById(${JSON.stringify(targetRgId)});
+                var ri = ${ri};
+                var prefixes = ['params_', 'customData_'];
+                var rg = null;
+                for (var pi = 0; pi < prefixes.length; pi++) {
+                  var el = document.getElementById(prefixes[pi] + ri + '_type');
+                  if (el) { rg = el; break; }
+                }
                 if (!rg) return;
                 var labels = rg.querySelectorAll('label');
                 for (var lbl of labels) {
