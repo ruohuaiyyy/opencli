@@ -36,6 +36,7 @@ export interface ManifestEntry {
     choices?: string[];
   }>;
   columns?: string[];
+  defaultFormat?: string;
   pipeline?: Record<string, unknown>[];
   timeout?: number;
   deprecated?: boolean | string;
@@ -244,6 +245,10 @@ export function scanTs(filePath: string, site: string): ManifestEntry | null {
     if (colMatch) {
       entry.columns = colMatch[1].split(',').map(s => s.trim().replace(/^['"`]|['"`]$/g, '')).filter(Boolean);
     }
+
+    // Extract defaultFormat
+    const fmtMatch = src.match(/defaultFormat\s*:\s*['"`]([^'"`]+)['"`]/);
+    if (fmtMatch) entry.defaultFormat = fmtMatch[1];
 
     // Extract args array items: { name: '...', ... }
     const argsBlock = extractTsArgsBlock(src);

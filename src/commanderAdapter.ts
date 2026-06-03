@@ -67,7 +67,7 @@ export function registerCommandToProgram(siteCmd: Command, cmd: CliCommand): voi
     }
   }
   subCmd
-    .option('-f, --format <fmt>', 'Output format: table, json, yaml, md, csv', 'table')
+    .option('-f, --format <fmt>', 'Output format: table, json, yaml, md, csv', cmd.defaultFormat ?? 'table')
     .option('-v, --verbose', 'Debug output', false);
 
   // ── Account routing: xiaohongshu commands get --account option ──

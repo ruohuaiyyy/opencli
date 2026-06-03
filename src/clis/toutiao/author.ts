@@ -32,6 +32,7 @@ cli({
     { name: 'url', required: true, help: '文章链接' },
   ],
   columns: ['screen_name', 'follower_count', 'auth_info', 'media_id'],
+  defaultFormat: 'json',
   func: async (_page, kwargs) => {
     const articleUrl = String(kwargs.url || '').trim();
     if (!articleUrl) throw new CommandExecutionError('文章链接不能为空');

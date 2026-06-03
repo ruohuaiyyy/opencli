@@ -39,6 +39,7 @@ export interface CliCommand {
   browser?: boolean;
   args: Arg[];
   columns?: string[];
+  defaultFormat?: string;
   func?: (page: IPage, kwargs: CommandArgs, debug?: boolean) => Promise<unknown>;
   pipeline?: Record<string, unknown>[];
   timeoutSeconds?: number;
@@ -73,6 +74,7 @@ export interface CliOptions extends Partial<Omit<CliCommand, 'args' | 'descripti
   name: string;
   description?: string;
   args?: Arg[];
+  defaultFormat?: string;
 }
 
 // Use globalThis to ensure a single shared registry across all module instances.
@@ -94,6 +96,7 @@ export function cli(opts: CliOptions): CliCommand {
     browser,
     args: opts.args ?? [],
     columns: opts.columns,
+    defaultFormat: opts.defaultFormat,
     func: opts.func,
     pipeline: opts.pipeline,
     timeoutSeconds: opts.timeoutSeconds,
