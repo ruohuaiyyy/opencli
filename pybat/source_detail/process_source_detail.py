@@ -16,9 +16,11 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # 任务中心配置
-TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.market-analysis.inner3.beta.qunar.com")
+TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.openclaw-center.inner3.beta.qunar.com")
 WORKER_ID = os.environ.get("WORKER_ID", "source_detail_worker")
 TASK_TYPE = os.environ.get("TASK_TYPE", "source_detail")
+# 任务类型前缀列表，按顺序尝试拉取
+TASK_TYPE_PREFIXES = os.environ.get("TASK_TYPE_PREFIXES", "yuanbao,doubao,qwen,deepseek").split(",")
 PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "5"))
 EXECUTE_INTERVAL = int(os.environ.get("EXECUTE_INTERVAL", "10"))
 HTTP_TIMEOUT = 30
@@ -275,7 +277,7 @@ def report_result(task_id, status, worker_id):
 
 
 def run_loop(worker_id, task_type):
-    """主循环：拉取任务 -> 处理 -> 回调 -> 上报结果"""
+    """主循环：按前缀顺序拉取任务 -> 处理 -> 回调 -> 上报结果"""
 
     ota_codes = load_ota_codes()
     brand_synonyms = load_brand_synonyms()
@@ -283,7 +285,16 @@ def run_loop(worker_id, task_type):
 
     while True:
         try:
-            task = pull_task(worker_id, task_type)
+            task = None
+            # 按前缀顺序尝试拉取任务
+            for prefix in TASK_TYPE_PREFIXES:
+                full_type = f"{prefix}—{task_type}" if prefix else task_type
+                task = pull_task(worker_id, full_type)
+                if task:
+                    log.info("从 %s 拉取到任务", full_type)
+                    break
+                log.info("%s 无任务，继续尝试下一个前缀", full_type)
+
             if not task:
                 time.sleep(PULL_INTERVAL)
                 continue
@@ -350,7 +361,7 @@ def main():
     args = parser.parse_args()
 
     worker = args.worker_id or WORKER_ID
-    log.info("Starting source detail worker: %s, type: %s", worker, args.type)
+    log.info("Starting source detail worker: %s, base type: %s, prefixes: %s", worker, args.type, TASK_TYPE_PREFIXES)
     run_loop(worker, args.type)
 
 
