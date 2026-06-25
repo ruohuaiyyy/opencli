@@ -21,7 +21,7 @@ WORKER_ID = os.environ.get("WORKER_ID", "source_detail_worker")
 TASK_TYPE = os.environ.get("TASK_TYPE", "source_detail")
 # 任务类型前缀列表，按顺序尝试拉取
 TASK_TYPE_PREFIXES = os.environ.get("TASK_TYPE_PREFIXES", "yuanbao,doubao,qwen,deepseek").split(",")
-PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "5"))
+PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "120"))
 EXECUTE_INTERVAL = int(os.environ.get("EXECUTE_INTERVAL", "10"))
 HTTP_TIMEOUT = 30
 
@@ -50,12 +50,12 @@ OTA_BRAND_FILE = os.path.join(SCRIPT_DIR, 'ota-brand.json')
 
 def is_toutiao_url(url):
     """判断是否为今日头条URL"""
-    return bool(re.search(r'https?://m\.toutiao\.com/group/(\d+)', url))
+    return bool(re.search(r'toutiao\.com', url))
 
 
 def normalize_toutiao_url(url):
     """标准化头条URL为 m.toutiao.com/group/{id}/ 格式"""
-    match = re.search(r'group/(\d+)', url)
+    match = re.search(r'/(?:group|article)/(\d+)', url)
     if match:
         return f'http://m.toutiao.com/group/{match.group(1)}/'
     return url
@@ -289,6 +289,7 @@ def run_loop(worker_id, task_type):
             # 按前缀顺序尝试拉取任务
             for prefix in TASK_TYPE_PREFIXES:
                 full_type = f"{prefix}—{task_type}" if prefix else task_type
+                log.info("full_type: %s", full_type)
                 task = pull_task(worker_id, full_type)
                 if task:
                     log.info("从 %s 拉取到任务", full_type)
