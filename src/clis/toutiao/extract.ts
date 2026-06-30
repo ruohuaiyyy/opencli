@@ -9,7 +9,7 @@ function extractArticleId(url: string): string {
   return match ? match[1] : Date.now().toString();
 }
 
-async function extractContent(page: IPage, retries = 3): Promise<{ title: string; content: string }> {
+async function extractContent(page: IPage, retries = 3): Promise<{ title: string; content: string; publishTime: string }> {
   let lastError: Error | null = null;
 
   for (let i = 0; i < retries; i++) {
@@ -26,6 +26,35 @@ async function extractContent(page: IPage, retries = 3): Promise<{ title: string
             }
           }
           if (!title) title = document.title || '';
+
+          var publishTime = '';
+          var timeSelectors = [
+            'meta[property="article:published_time"]',
+            'meta[itemprop="datePublished"]',
+            'meta[name="publishdate"]',
+            'meta[name="date"]',
+            'time[datetime]',
+            '.article-meta span',
+            '.article-meta',
+            '.article-sub .date',
+            '.article-sub time',
+            '.author-info .time',
+            '.author-info time',
+          ];
+          for (var i = 0; i < timeSelectors.length; i++) {
+            var el = document.querySelector(timeSelectors[i]);
+            if (el) {
+              publishTime = el.getAttribute('content') || el.getAttribute('datetime') || el.textContent || '';
+              publishTime = publishTime.trim();
+              if (publishTime) break;
+            }
+          }
+          // Fallback: search page for date pattern like "2026-04-29 04:57"
+          if (!publishTime) {
+            var bodyText = document.body ? document.body.innerText || '' : '';
+            var dateMatch = bodyText.match(/(\d{4}[-/]\d{2}[-/]\d{2}\s+\d{2}:\d{2})/);
+            if (dateMatch) publishTime = dateMatch[1];
+          }
 
           var contentSelectors = ['.article-content', 'div.article-content', '.pgc-article-content', '#article-root', 'article'];
           var contentContainer = null;
@@ -98,17 +127,21 @@ async function extractContent(page: IPage, retries = 3): Promise<{ title: string
               var l = lines[p].trim();
               if (l.length > 0) cleaned.push(l);
             }
-            return { title: title, content: mediaText + cleaned.join('\\n\\n') };
+            return { title: title, publishTime: publishTime, content: mediaText + cleaned.join('\\n\\n') };
           }
 
-          return { title: title, content: '' };
+          return { title: title, publishTime: publishTime, content: '' };
         })()`);
 
       if (!result.title && !result.content) {
         throw new Error('未找到标题或正文内容');
       }
 
-      return { title: result.title || '未知标题', content: result.content || '正文提取失败' };
+      return {
+        title: result.title || '未知标题',
+        publishTime: result.publishTime || '',
+        content: result.content || '正文提取失败',
+      };
     } catch (e) {
       lastError = e as Error;
       if (i < retries - 1) {
@@ -153,6 +186,7 @@ cli({
 
     const output = {
       title: extracted.title,
+      publishTime: extracted.publishTime,
       content: extracted.content,
     };
 
