@@ -70,17 +70,17 @@ def extract_platform_from_url(url):
 
 
 def fetch_toutiao_content(url, cache_dir):
-    """调用 opencli toutiao extract 获取文章内容"""
+    """调用 opencli toutiao extract 获取文章内容，返回 (content, publish_time, file_path)"""
     match = re.search(r'group/(\d+)', url)
     if not match:
-        return '', None
+        return '', '', None
     group_id = match.group(1)
     cache_file = os.path.join(cache_dir, f'{group_id}.json')
 
     if os.path.exists(cache_file):
         with open(cache_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data.get('content', ''), cache_file
+        return data.get('content', ''), data.get('publishTime', ''), cache_file
 
     os.makedirs(cache_dir, exist_ok=True)
     cmd = ['opencli', 'toutiao', 'extract', '--url', url, '-f', 'json']
@@ -89,20 +89,20 @@ def fetch_toutiao_content(url, cache_dir):
 
     if result.returncode != 0:
         log.error('opencli extract 失败: %s', result.stderr.strip())
-        return '', None
+        return '', '', None
 
     try:
         cli_output = json.loads(result.stdout.strip())
         if not isinstance(cli_output, list) or not cli_output:
-            return '', None
+            return '', '', None
         detail = cli_output[0].get('detail', '')
         saved_path_match = re.search(r'已保存至\s+(.+)', detail)
         if not saved_path_match:
-            return '', None
+            return '', '', None
         saved_path = saved_path_match.group(1).strip()
 
         if not os.path.exists(saved_path):
-            return '', None
+            return '', '', None
 
         with open(saved_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -110,10 +110,10 @@ def fetch_toutiao_content(url, cache_dir):
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        return data.get('content', ''), saved_path
+        return data.get('content', ''), data.get('publishTime', ''), saved_path
     except json.JSONDecodeError as e:
         log.error('解析 extract 输出失败: %s', e)
-        return '', None
+        return '', '', None
 
 
 def fetch_toutiao_author(url, cache_dir):
@@ -231,7 +231,9 @@ def process_url(url, ota_codes, brand_synonyms):
         normalized_url = normalize_toutiao_url(url)
         result['source_url'] = normalized_url
 
-        content, _ = fetch_toutiao_content(normalized_url, DEFAULT_CACHE_DIR)
+        content, publish_time, _ = fetch_toutiao_content(normalized_url, DEFAULT_CACHE_DIR)
+        if publish_time:
+            result['publish_time'] = publish_time
         platform = match_platform_by_content(content, ota_codes, brand_synonyms)
         if platform:
             result['platform'] = platform
