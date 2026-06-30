@@ -229,7 +229,7 @@ def process_url(url, ota_codes, brand_synonyms):
 
     if is_toutiao_url(url):
         normalized_url = normalize_toutiao_url(url)
-        result['source_url'] = normalized_url
+        result['source_url'] = url
 
         content, _ = fetch_toutiao_content(normalized_url, DEFAULT_CACHE_DIR)
         platform = match_platform_by_content(content, ota_codes, brand_synonyms)

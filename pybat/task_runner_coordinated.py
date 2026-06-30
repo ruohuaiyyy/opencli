@@ -37,7 +37,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # 配置（同原脚本）
-TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://openclawtaskcenter.beta.qunar.com")
+TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.market-analysis.inner3.beta.qunar.com")
 WORKER_ID = os.environ.get("WORKER_ID", "lqxCopaw")
 TASK_TYPE = os.environ.get("TASK_TYPE", "default")
 PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "5"))
