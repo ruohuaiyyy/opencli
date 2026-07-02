@@ -32,7 +32,7 @@ URL_PLATFORM_MAP = {
     'trip.com': '携程',
     'fliggy.com': '飞猪',
     'meituan.com': '美团',
-    'ly.com': '同程',
+    'www.ly.com': '同程',
     'tongcheng.com': '同程',
 }
 
@@ -157,11 +157,11 @@ def fetch_toutiao_author(url, cache_dir):
 
 
 def load_ota_codes():
-    """加载OTA口令码配置"""
+    """加载OTA口令码配置：优先 publicPassCodeKeyword，兜底 defaultKeyWord"""
     if os.path.exists(OTA_CODES_FILE):
         with open(OTA_CODES_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    return {}
+    return {"publicPassCodeKeyword": [], "defaultKeyWord": []}
 
 
 def load_brand_synonyms():
@@ -174,48 +174,94 @@ def load_brand_synonyms():
 
 
 def find_earliest_platform(content, brand_synonyms):
-    """在文章中找到最先出现的OTA平台名称"""
+    """在文章中找到最先出现的OTA平台名称（大小写不敏感）"""
     if not content or not brand_synonyms:
         return ''
+    lower_content = content.lower()
     earliest_pos = -1
     earliest_platform = ''
     for platform, synonyms in brand_synonyms.items():
         for synonym in synonyms:
-            pos = content.find(synonym)
+            if not synonym:
+                continue
+            pos = lower_content.find(synonym.lower())
             if pos != -1 and (earliest_pos == -1 or pos < earliest_pos):
                 earliest_pos = pos
                 earliest_platform = platform
     return earliest_platform
 
 
+def _collect_code_hits(lower_content, code, brand_synonyms, platform_stats):
+    """累加单个 code 在内容中所有出现位置对各 platform 的命中统计。
+
+    全品牌通用口令码：命中口令码后扫描邻近窗口内所有品牌同义词，
+    将命中分别记到对应品牌（同一口令码在窗口内可命中多个品牌）。
+    """
+    lower_code = code.lower()
+    for kw_match in re.finditer(re.escape(lower_code), lower_content):
+        kw_idx = kw_match.start()
+        kw_center = kw_idx + len(code) // 2
+        ws = max(0, kw_center - CODE_CONTEXT_WINDOW)
+        we = min(len(lower_content), kw_center + CODE_CONTEXT_WINDOW)
+        window_text = lower_content[ws:we]
+        # 在窗口中查找所有出现的品牌
+        for platform, synonyms in brand_synonyms.items():
+            if not any(s and s.lower() in window_text for s in synonyms):
+                continue
+            stat = platform_stats.setdefault(platform, {'count': 0, 'firstBrandPos': -1})
+            stat['count'] += 1
+            if stat['firstBrandPos'] < 0:
+                first_pos = -1
+                for syn in synonyms:
+                    if not syn:
+                        continue
+                    p = window_text.find(syn.lower())
+                    if p != -1 and (first_pos == -1 or p < first_pos):
+                        first_pos = p
+                stat['firstBrandPos'] = first_pos if first_pos >= 0 else kw_idx
+
+
 def match_platform_by_content(content, ota_codes, brand_synonyms):
-    """根据文章内容匹配发布平台（口令码 + 上下文品牌名匹配）"""
+    """根据文章内容匹配发布平台（两阶段口令码匹配）
+
+    第一阶段：publicPassCodeKeyword（强口令码，命中后窗口内必须有品牌）
+    第二阶段：defaultKeyWord（兜底口令码，命中后窗口内必须有品牌）
+    全部大小写不敏感；关键字多次出现都计入。
+    平局时优先按命中次数，再按品牌在全文中的首次出现位置。
+    两阶段都无结果时回退到 find_earliest_platform。
+    """
     if not content or not ota_codes:
         return ''
 
-    context_assigned = {}
-    for platform, codes in ota_codes.items():
-        synonyms = brand_synonyms.get(platform, [platform])
-        for code in codes:
-            pos = content.find(code)
-            if pos == -1:
-                continue
-            ctx_start = max(0, pos - CODE_CONTEXT_WINDOW)
-            ctx_end = min(len(content), pos + len(code) + CODE_CONTEXT_WINDOW)
-            context = content[ctx_start:ctx_end]
-            found = False
-            for synonym in synonyms:
-                if synonym in context:
-                    context_assigned[platform] = context_assigned.get(platform, 0) + 1
-                    found = True
-                    break
-            if not found:
-                context_assigned[platform] = context_assigned.get(platform, 0) + 1
+    lower_content = content.lower()
+    platform_stats = {}
 
-    if context_assigned:
-        return max(context_assigned.keys(), key=lambda p: context_assigned[p])
+    # 第一阶段：publicPassCodeKeyword
+    for code in ota_codes.get('publicPassCodeKeyword', []):
+        if not code:
+            continue
+        _collect_code_hits(lower_content, code, brand_synonyms, platform_stats)
 
-    return find_earliest_platform(content, brand_synonyms)
+    if platform_stats:
+        return min(
+            platform_stats.keys(),
+            key=lambda p: (-platform_stats[p]['count'], platform_stats[p]['firstBrandPos']),
+        )
+
+    # 第二阶段：defaultKeyWord 兜底
+    for code in ota_codes.get('defaultKeyWord', ['搜','搜索']):
+        if not code:
+            continue
+        _collect_code_hits(lower_content, code, brand_synonyms, platform_stats)
+
+    if platform_stats:
+        return min(
+            platform_stats.keys(),
+            key=lambda p: (-platform_stats[p]['count'], platform_stats[p]['firstBrandPos']),
+        )
+
+    # return find_earliest_platform(content, brand_synonyms)
+    return ''
 
 
 def process_url(url, ota_codes, brand_synonyms):
@@ -283,7 +329,10 @@ def run_loop(worker_id, task_type):
 
     ota_codes = load_ota_codes()
     brand_synonyms = load_brand_synonyms()
-    log.info("OTA配置: %s 个平台口令码, %s 个品牌同义词", len(ota_codes), len(brand_synonyms))
+    log.info("OTA配置: %s 个优先口令码, %s 个兜底口令码, %s 个品牌同义词",
+             len(ota_codes.get('publicPassCodeKeyword', [])),
+             len(ota_codes.get('defaultKeyWord', [])),
+             len(brand_synonyms))
 
     while True:
         try:
