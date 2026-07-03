@@ -56,6 +56,9 @@ ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
 PROXY_FILE = Path.home() / ".opencli" / "accounts" / "proxy.json"
 PROFILES_DIR = Path.home() / ".opencli" / "profiles"
 
+# 全局代理配置：仅由命令行 --proxy 设置，所有账号共用；未传则不使用代理
+PROXY_CONFIG = ""
+
 # ========== 白名单相关配置 ==========
 WHITELIST_KEY = "87624BD3"  # TODO: 替换为实际 Key
 WHITELIST_MAX_SIZE = 256
@@ -66,7 +69,7 @@ WHITELIST_IP_FILE = Path.home() / ".opencli" / "accounts" / "whitelist_ips.json"
 
 
 def get_proxy(account):
-    """根据账号获取代理配置，无代理配置则返回 None"""
+    """根据账号获取代理配置，无代理配置则返回 None（保留方法，当前未使用）"""
     log.info("get_proxy for account %s", account)
     try:
         if PROXY_FILE.exists():
@@ -79,6 +82,16 @@ def get_proxy(account):
             log.info("file not found %s", PROXY_FILE)
     except Exception as e:
         log.warning("Failed to read proxy config: %s", e)
+    return None
+
+
+def get_proxy_from_param(account):
+    """从命令行参数/环境变量获取全局代理，所有账号共用；未配置则返回 None"""
+    _ = account  # 参数保留以兼容调用签名，当前所有账号共用同一代理
+    if PROXY_CONFIG:
+        log.info("Using proxy from param for account %s: %s", account, PROXY_CONFIG)
+        return PROXY_CONFIG
+    log.info("No proxy configured via param for account %s", account)
     return None
 
 
@@ -177,11 +190,6 @@ def delete_from_whitelist(ips):
 
 
 def handle_whitelist_for_proxy(account):
-    """处理代理白名单逻辑"""
-    proxy = get_proxy(account)
-    if not proxy:
-        return True, None
-
     all_ips = get_all_public_ips()
     if not all_ips:
         log.warning("Cannot get any public IP")
@@ -303,7 +311,7 @@ def restart_chrome(account):
     profile_dir = PROFILES_DIR / account
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    proxy = get_proxy(account)
+    proxy = get_proxy_from_param(account)
     use_proxy = False
 
     # ========== 白名单处理 ==========
@@ -689,7 +697,12 @@ if __name__ == "__main__":
     parser.add_argument("worker_id", nargs="?", default=None, help="Worker ID")
     parser.add_argument("--type", default=TASK_TYPE, help="任务类型")
     parser.add_argument("--restart-after", type=int, default=20, help="每多少条任务后切换 Chrome")
+    parser.add_argument("--proxy", default=None, help="全局代理配置（所有账号共用），优先级高于环境变量 PROXY")
     args = parser.parse_args()
+
+    # 命令行 --proxy 优先级高于环境变量 PROXY
+    if args.proxy is not None:
+        PROXY_CONFIG = args.proxy.strip()
 
     worker = args.worker_id or WORKER_ID
     run_loop(worker, args.type, args.restart_after)
