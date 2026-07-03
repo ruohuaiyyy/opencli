@@ -60,7 +60,7 @@ PROFILES_DIR = Path.home() / ".opencli" / "profiles"
 PROXY_CONFIG = ""
 
 # ========== 白名单相关配置 ==========
-WHITELIST_KEY = "87624BD3"  # TODO: 替换为实际 Key
+WHITELIST_KEY = "0AAF21AA"  # TODO: 替换为实际 Key
 WHITELIST_MAX_SIZE = 256
 WHITELIST_QUERY_URL = "https://proxy.qg.net/whitelist/query"
 WHITELIST_ADD_URL = "https://proxy.qg.net/whitelist/add"
