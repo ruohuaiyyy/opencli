@@ -573,11 +573,11 @@ def run_loop(worker_id, task_type, restart_after):
                 state = {"accountIndex": 0, "taskCountSinceRestart": 0, "date": today, "accountTaskCounts": {}}
 
             # ========== 时间窗口检查：只在 10:00 - 22:00 执行 ==========
-            current_hour = datetime.now().hour
-            if current_hour < 10 or current_hour >= 22:
-                update_status(worker_id, task_type, WorkerStatus.WAITING.value, task_count_since_restart)
-                time.sleep(60)
-                continue
+            # current_hour = datetime.now().hour
+            # if current_hour < 10 or current_hour >= 22:
+            #     update_status(worker_id, task_type, WorkerStatus.WAITING.value, task_count_since_restart)
+            #     time.sleep(60)
+            #     continue
 
             # ========== 关键修改：检查是否需要切换 ==========
             if task_type in ACCOUNT_LIMIT_TASK_TYPES and task_count_since_restart > 0 and task_count_since_restart % restart_after == 0:
