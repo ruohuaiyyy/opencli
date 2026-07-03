@@ -336,6 +336,7 @@ def restart_chrome(account):
         cmd.append(f"--proxy-server={proxy}")
 
     try:
+        log.info("Starting Chrome with command: %s", cmd)
         subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
@@ -700,9 +701,9 @@ if __name__ == "__main__":
     parser.add_argument("--proxy", default=None, help="全局代理配置（所有账号共用），优先级高于环境变量 PROXY")
     args = parser.parse_args()
 
-    # 命令行 --proxy 优先级高于环境变量 PROXY
+    # 命令行 --proxy 设置全局代理；去除首尾空白与引号，避免 Chrome 参数解析异常
     if args.proxy is not None:
-        PROXY_CONFIG = args.proxy.strip()
+        PROXY_CONFIG = args.proxy.strip().strip("'\"")
 
     worker = args.worker_id or WORKER_ID
     run_loop(worker, args.type, args.restart_after)
