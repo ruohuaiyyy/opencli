@@ -49,7 +49,7 @@ HTTP_TIMEOUT = 30
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "300"))
 MAX_CONSECUTIVE_FAILURES = 2
 MAX_TASKS_PER_ACCOUNT = 20  # 每个账号每天最多执行任务次数
-ACCOUNT_LIMIT_TASK_TYPES = {"opencli-analysis-doubao", "opencli-analysis-doubaoTest"}  # 需要限制账号次数的 task_type
+ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 限制账号次数的 task_type 前缀，匹配此前缀的所有 task_type 生效
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
@@ -581,7 +581,7 @@ def run_loop(worker_id, task_type, restart_after):
             #     continue
 
             # ========== 关键修改：检查是否需要切换 ==========
-            if task_type in ACCOUNT_LIMIT_TASK_TYPES and task_count_since_restart > 0 and task_count_since_restart % restart_after == 0:
+            if task_type.startswith(ACCOUNT_LIMIT_TASK_TYPE_PREFIX) and task_count_since_restart > 0 and task_count_since_restart % restart_after == 0:
                 original_index = account_index
                 switched = False
 
@@ -643,7 +643,7 @@ def run_loop(worker_id, task_type, restart_after):
             account_task_counts[current_account] = account_task_counts.get(current_account, 0) + 1
 
             # ========== 检查当前账号是否达到每天执行上限（仅限特定 task_type） ==========
-            if task_type in ACCOUNT_LIMIT_TASK_TYPES and account_task_counts.get(current_account, 0) >= MAX_TASKS_PER_ACCOUNT:
+            if task_type.startswith(ACCOUNT_LIMIT_TASK_TYPE_PREFIX) and account_task_counts.get(current_account, 0) >= MAX_TASKS_PER_ACCOUNT:
                 log.info("[%s] Account %s exhausted after %d tasks today", worker_id, current_account, MAX_TASKS_PER_ACCOUNT)
 
                 # 找到下一个未用尽的账号
