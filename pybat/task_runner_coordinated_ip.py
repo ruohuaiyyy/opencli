@@ -49,11 +49,192 @@ HTTP_TIMEOUT = 30
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "300"))
 MAX_CONSECUTIVE_FAILURES = 2
 MAX_TASKS_PER_ACCOUNT = 20  # 每个账号每天最多执行任务次数
-ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 需要限制账号次数的 task_type 前缀，匹配所有 opencli-analysis-doubao-* 子类型
+ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 限制账号次数的 task_type 前缀，匹配此前缀的所有 task_type 生效
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
+PROXY_FILE = Path.home() / ".opencli" / "accounts" / "proxy.json"
 PROFILES_DIR = Path.home() / ".opencli" / "profiles"
+
+# 全局代理配置：仅由命令行 --proxy 设置，所有账号共用；未传则不使用代理
+PROXY_CONFIG = ""
+
+# ========== 白名单相关配置 ==========
+WHITELIST_KEY = "0AAF21AA"  # TODO: 替换为实际 Key
+WHITELIST_MAX_SIZE = 256
+WHITELIST_QUERY_URL = "https://proxy.qg.net/whitelist/query"
+WHITELIST_ADD_URL = "https://proxy.qg.net/whitelist/add"
+WHITELIST_DEL_URL = "https://proxy.qg.net/whitelist/del"
+WHITELIST_IP_FILE = Path.home() / ".opencli" / "accounts" / "whitelist_ips.json"
+
+
+def get_proxy(account):
+    """根据账号获取代理配置，无代理配置则返回 None（保留方法，当前未使用）"""
+    log.info("get_proxy for account %s", account)
+    try:
+        if PROXY_FILE.exists():
+            proxies = json.loads(PROXY_FILE.read_text(encoding="utf-8"))
+            proxy = proxies.get(account)
+            if proxy:
+                log.info("Using proxy for account %s: %s", account, proxy)
+                return proxy
+        else:
+            log.info("file not found %s", PROXY_FILE)
+    except Exception as e:
+        log.warning("Failed to read proxy config: %s", e)
+    return None
+
+
+def get_proxy_from_param(account):
+    """从命令行参数/环境变量获取全局代理，所有账号共用；未配置则返回 None"""
+    _ = account  # 参数保留以兼容调用签名，当前所有账号共用同一代理
+    if PROXY_CONFIG:
+        log.info("Using proxy from param for account %s: %s", account, PROXY_CONFIG)
+        return PROXY_CONFIG
+    log.info("No proxy configured via param for account %s", account)
+    return None
+
+
+def get_all_public_ips():
+    """获取所有出口 IP（通过多个 URL 收集）"""
+    all_ips = set()
+    
+    def parse_ipip(text):
+        match = re.search(r'(\d+\.\d+\.\d+\.\d+)', text)
+        return match.group(1) if match else None
+    
+    apis = [
+        ('http://ip.cip.cc', lambda t: t.strip().splitlines()[0]),
+        ('http://ip.3322.net', lambda t: t.strip()),
+        ('http://1212.ip138.com/ic.asp', lambda t: t[t.find('[')+1:t.find(']')]),
+        ('https://myip.ipip.net', parse_ipip),
+        # —— 新增：飞跨 www.feikua.cn/ip 聚合可用接口 ——
+        ('https://ip.sb', lambda t: t.strip()),# ip.sb
+        ('https://ipinfo.io/ip', lambda t: t.strip()), # ipinfo.io
+    ]
+    
+    for url, parser in apis:
+        try:
+            r = requests.get(url, timeout=6)
+            r.encoding = r.apparent_encoding
+            result = parser(r.text.strip())
+            if result:
+                all_ips.add(result)
+        except:
+            continue
+    
+    return list(all_ips)
+
+
+def load_whitelist_ips():
+    """从本地文件加载已申请过的白名单 IP 列表"""
+    try:
+        if WHITELIST_IP_FILE.exists():
+            return json.loads(WHITELIST_IP_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return []
+
+
+def save_whitelist_ips(ips):
+    """保存白名单 IP 列表到本地文件（整体替换，非追加）"""
+    try:
+        WHITELIST_IP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WHITELIST_IP_FILE.write_text(json.dumps(ips, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning("Failed to save whitelist IPs: %s", e)
+
+
+def query_whitelist():
+    """查询当前服务商白名单列表"""
+    try:
+        resp = requests.get(WHITELIST_QUERY_URL, params={"Key": WHITELIST_KEY, "detail": 0}, timeout=10)
+        result = resp.json()
+        log.info("Query whitelist resp: %s", result)
+        if result.get("Code") == 0:
+            log.info("Query whitelist Data: %s", result.get("Data", []))
+            return result.get("Data") or []
+        log.warning("Query whitelist failed, Code: %s", result.get("Code"))
+    except Exception as e:
+        log.warning("Failed to query whitelist: %s", e)
+    return None
+
+
+def add_to_whitelist(ip):
+    """添加 IP 到服务商白名单"""
+    try:
+        resp = requests.get(WHITELIST_ADD_URL, params={"Key": WHITELIST_KEY, "IP": ip}, timeout=10)
+        result = resp.json()
+        if result.get("Code") == 0:
+            log.info("Added %s to whitelist, Num: %s", ip, result.get("Num"))
+            return True
+        log.warning("Add to whitelist failed, Code: %s", result.get("Code"))
+    except Exception as e:
+        log.warning("Failed to add to whitelist: %s", e)
+    return False
+
+
+def delete_from_whitelist(ips):
+    """从服务商白名单删除 IP 列表"""
+    try:
+        ip_str = ",".join(ips)
+        resp = requests.get(WHITELIST_DEL_URL, params={"Key": WHITELIST_KEY, "IP": ip_str}, timeout=10)
+        result = resp.json()
+        if result.get("Code") == 0:
+            log.info("Deleted from whitelist: %s, Num: %s", ips, result.get("Num"))
+            return True
+        log.warning("Delete from whitelist failed, Code: %s", result.get("Code"))
+    except Exception as e:
+        log.warning("Failed to delete from whitelist: %s", e)
+    return False
+
+
+def handle_whitelist_for_proxy(account):
+    all_ips = get_all_public_ips()
+    if not all_ips:
+        log.warning("Cannot get any public IP")
+        return False, None
+
+    log.info("Got %d public IPs: %s", len(all_ips), all_ips)
+
+    whitelist = query_whitelist()
+    if whitelist is None:
+        log.warning("Failed to query whitelist")
+        return False, None
+
+    ips_to_add = [ip for ip in all_ips if ip not in whitelist]
+    
+    if not ips_to_add:
+        log.info("All IPs already in whitelist")
+        return True, all_ips[0]
+
+    log.info("IPs not in whitelist: %s, current count: %d/%d",
+            ips_to_add, len(whitelist), WHITELIST_MAX_SIZE)
+
+    # 白名单已满，需要清理后批量添加
+    if len(whitelist)+len(ips_to_add) >= WHITELIST_MAX_SIZE:
+        log.info("Whitelist full, cleaning all old IPs first...")
+        old_ips = load_whitelist_ips()
+        if old_ips:
+            delete_from_whitelist(old_ips)
+            log.info("Deleted %d old IPs from whitelist", len(old_ips))
+        else:
+            log.warning("No old IPs recorded locally")
+            return False, all_ips[0]
+        save_whitelist_ips([])
+
+    # 批量添加新 IP
+    new_recorded_ips = []
+    for ip in all_ips:
+        if add_to_whitelist(ip):
+            new_recorded_ips.append(ip)
+            log.info("IP %s added to whitelist", ip)
+
+    # 更新本地记录
+    if new_recorded_ips:
+        save_whitelist_ips(new_recorded_ips)
+
+    return True, all_ips[0]
 
 
 def get_doubao_accounts():
@@ -129,12 +310,35 @@ def restart_chrome(account):
 
     profile_dir = PROFILES_DIR / account
     profile_dir.mkdir(parents=True, exist_ok=True)
+
+    proxy = get_proxy_from_param(account)
+    use_proxy = False
+
+    # ========== 白名单处理 ==========
+    if proxy:
+        whitelist_ok, current_ip = handle_whitelist_for_proxy(account)
+        if whitelist_ok:
+            use_proxy = True
+            log.info("Whitelist handling passed, will use proxy, current IP: %s", current_ip)
+        else:
+            log.warning("Whitelist handling failed, falling back to no proxy")
+            use_proxy = False
+    # =================================
+
+    cmd = [
+        "chrome",
+        f"--user-data-dir={profile_dir}",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+    ]
+    if use_proxy:
+        cmd.append(f"--proxy-server={proxy}")
+
     try:
+        log.info("Starting Chrome with command: %s", cmd)
         subprocess.Popen(
-            ["chrome", f"--user-data-dir={profile_dir}",
-             "--disable-background-timer-throttling",
-             "--disable-backgrounding-occluded-windows",
-             "--disable-renderer-backgrounding"],
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
@@ -143,7 +347,7 @@ def restart_chrome(account):
         log.error("Failed to start Chrome: %s", e)
         raise
     time.sleep(5)
-    log.info("Chrome started with profile: %s", account)
+    log.info("Chrome started with profile: %s, use_proxy: %s", account, use_proxy)
 
 
 def coordinated_restart_chrome(worker_id, task_type, account):
@@ -372,9 +576,9 @@ def run_loop(worker_id, task_type, restart_after):
             # ========== 时间窗口检查：只在 10:00 - 22:00 执行 ==========
             # current_hour = datetime.now().hour
             # if current_hour < 10 or current_hour >= 22:
-                # update_status(worker_id, task_type, WorkerStatus.WAITING.value, task_count_since_restart)
-                # time.sleep(60)
-                # continue
+            #     update_status(worker_id, task_type, WorkerStatus.WAITING.value, task_count_since_restart)
+            #     time.sleep(60)
+            #     continue
 
             # ========== 关键修改：检查是否需要切换 ==========
             if task_type.startswith(ACCOUNT_LIMIT_TASK_TYPE_PREFIX) and task_count_since_restart > 0 and task_count_since_restart % restart_after == 0:
@@ -494,7 +698,12 @@ if __name__ == "__main__":
     parser.add_argument("worker_id", nargs="?", default=None, help="Worker ID")
     parser.add_argument("--type", default=TASK_TYPE, help="任务类型")
     parser.add_argument("--restart-after", type=int, default=20, help="每多少条任务后切换 Chrome")
+    parser.add_argument("--proxy", default=None, help="全局代理配置（所有账号共用），优先级高于环境变量 PROXY")
     args = parser.parse_args()
+
+    # 命令行 --proxy 设置全局代理；去除首尾空白与引号，避免 Chrome 参数解析异常
+    if args.proxy is not None:
+        PROXY_CONFIG = args.proxy.strip().strip("'\"")
 
     worker = args.worker_id or WORKER_ID
     run_loop(worker, args.type, args.restart_after)
