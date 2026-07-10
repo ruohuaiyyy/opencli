@@ -117,17 +117,17 @@ def fetch_toutiao_content(url, cache_dir):
 
 
 def fetch_toutiao_author(url, cache_dir):
-    """调用 opencli toutiao author 获取作者信息"""
+    """调用 opencli toutiao author 获取作者信息（含实名认证信息）"""
     match = re.search(r'group/(\d+)', url)
     if not match:
-        return ''
+        return '', ''
     group_id = match.group(1)
     cache_file = os.path.join(cache_dir, f'{group_id}_author.json')
 
     if os.path.exists(cache_file):
         with open(cache_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data.get('screen_name', '')
+        return data.get('screen_name', ''), data.get('auth_info', '')
 
     os.makedirs(cache_dir, exist_ok=True)
     cmd = ['opencli', 'toutiao', 'author', '--url', url, '-f', 'json']
@@ -136,24 +136,25 @@ def fetch_toutiao_author(url, cache_dir):
 
     if result.returncode != 0:
         log.error('opencli author 失败: %s', result.stderr.strip())
-        return ''
+        return '', ''
 
     try:
         cli_output = json.loads(result.stdout.strip())
         if not isinstance(cli_output, list) or not cli_output:
-            return ''
+            return '', ''
 
         first_item = cli_output[0]
         screen_name = first_item.get('screen_name', '')
+        auth_info = first_item.get('auth_info', '')
 
-        cache_data = {'screen_name': screen_name}
+        cache_data = {'screen_name': screen_name, 'auth_info': auth_info}
         with open(cache_file, 'w', encoding='utf-8') as f:
             json.dump(cache_data, f, ensure_ascii=False, indent=2)
 
-        return screen_name
+        return screen_name, auth_info
     except json.JSONDecodeError as e:
         log.error('解析 author 输出失败: %s', e)
-        return ''
+        return '', ''
 
 
 def load_ota_codes():
@@ -219,11 +220,12 @@ def match_platform_by_content(content, ota_codes, brand_synonyms):
 
 
 def process_url(url, ota_codes, brand_synonyms):
-    """处理单个URL，返回 {source_url, platform, author, publish_time}"""
+    """处理单个URL，返回 {source_url, platform, author, auth_info, publish_time}"""
     result = {
         'source_url': url,
         'platform': '',
         'author': '',
+        'auth_info': '',
         'publish_time': '',
     }
 
@@ -238,9 +240,11 @@ def process_url(url, ota_codes, brand_synonyms):
         if platform:
             result['platform'] = platform
 
-        author = fetch_toutiao_author(normalized_url, DEFAULT_CACHE_DIR)
+        author, auth_info = fetch_toutiao_author(normalized_url, DEFAULT_CACHE_DIR)
         if author:
             result['author'] = author
+        if auth_info:
+            result['auth_info'] = auth_info
     else:
         platform = extract_platform_from_url(url)
         if platform:
