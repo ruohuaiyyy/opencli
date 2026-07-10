@@ -1,0 +1,200 @@
+[
+    {
+        "component": "业务直调",
+        "x": 100,
+        "y": 300,
+        "fields": [
+            {
+                "type": "text",
+                "name": "节点名称",
+                "value": "我的业务直调"
+            },
+            {
+                "type": "click",
+                "name": "新增参数",
+                "rows": [
+                    {
+                        "children": [
+                            {
+                                "type": "text",
+                                "name": "属性名",
+                                "value": "test22"
+                            },
+                            {
+                                "type": "select",
+                                "name": "值类型",
+                                "value": "字符串"
+                            },
+                            {
+                                "type": "text",
+                                "name": "属性描述",
+                                "value": "测试"
+                            }
+                        ]
+                    },
+                    {
+                        "children": [
+                            {
+                                "type": "text",
+                                "name": "属性名",
+                                "value": "test33"
+                            },
+                            {
+                                "type": "select",
+                                "name": "值类型",
+                                "value": "布尔值"
+                            },
+                            {
+                                "type": "text",
+                                "name": "属性描述",
+                                "value": "测试33"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "name": "下步节点",
+                "value": "子流程"
+            }
+        ]
+    },
+    {
+        "component": "子流程",
+        "x": 400,
+        "y": 300,
+        "fields": [
+            {
+                "type": "text",
+                "name": "节点名称",
+                "value": "子流程节点"
+            },
+            {
+                "type": "select",
+                "name": "业务线",
+                "value": "公共"
+            },
+            {
+                "type": "select",
+                "name": "流程名称",
+                "value": "12(145)"
+            },
+            {
+                "type": "select",
+                "name": "下步节点",
+                "value": "Groovy"
+            }
+        ]
+    },
+    {
+        "component": "Groovy",
+        "x": 700,
+        "y": 300,
+        "fields": [
+            {
+                "type": "text",
+                "name": "节点名称",
+                "value": "Groovy节点"
+            },
+            {
+                "type": "click",
+                "name": "新增参数",
+                "rows": [
+                    {
+                        "children": [
+                            {
+                                "type": "text",
+                                "name": "属性名",
+                                "value": "test22"
+                            },
+                            {
+                                "type": "text",
+                                "name": "属性值",
+                                "value": "test22"
+                            }
+                        ]
+                    },
+                    {
+                        "mode": "context",
+                        "children": [
+                            {
+                                "type": "text",
+                                "name": "属性名",
+                                "value": "username"
+                            },
+                            {
+                                "type": "select",
+                                "name": "属性值",
+                                "value": "用户名"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "name": "script",
+                "type": "code",
+                "value": "def result = input + 1; return result;"
+            },
+            {
+                "type": "click",
+                "name": "新增参数",
+                "section": "output",
+                "rows": [
+                    {
+                        "children": [
+                            {
+                                "section": "output",
+                                "name": "属性名",
+                                "type": "text",
+                                "value": "result"
+                            },
+                            {
+                                "section": "output",
+                                "type": "select",
+                                "name": "值类型",
+                                "value": "字符串"
+                            },
+                            {
+                                "section": "output",
+                                "name": "属性描述",
+                                "type": "text",
+                                "value": "返回值"
+                            }
+                        ]
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "name": "下步节点",
+                "value": "直调返回"
+            }
+        ]
+    },
+        {
+        "component": "直调返回",
+        "x": 100,
+        "y": 600,
+        "fields": [
+            {
+                "type": "text",
+                "name": "节点名称",
+                "value": "我的直调返回"
+            },
+            {
+              "type": "click",
+              "name": "添加数据",
+              "rows": [
+                {
+                  "children": [
+                    { "name": "属性名", "type": "text", "value": "result1" },
+                    { "name": "属性值", "type": "text", "value": "测试输出" }
+                  ]
+                }
+              ]
+            }
+        ]
+    }
+]
