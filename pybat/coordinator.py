@@ -165,9 +165,9 @@ def request_switch(worker_id, task_type):
         _check_and_elect_leader(state, unique_key)
         if state.get("leader") != unique_key:
             return False
-        if state.get("switch_pending"):
-            return False
-        state["switch_pending"] = True
+        #if state.get("switch_pending"):
+            # return False
+        # state["switch_pending"] = True
         state["switch_initiator"] = unique_key
         state["switch_start_time"] = time.time()
         _save_state(state)
@@ -269,7 +269,7 @@ def finish_switch(worker_id, task_type, new_account):
         if state.get("switch_initiator") != unique_key:
             return
         
-        state["switch_pending"] = False
+        # state["switch_pending"] = False
         state.pop("switch_initiator", None)
         state.pop("switch_start_time", None)
         _save_state(state)
