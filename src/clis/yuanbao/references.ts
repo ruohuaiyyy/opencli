@@ -116,7 +116,20 @@ function sendScript(): string {
   `;
 }
 
-/** Extract the latest AI answer text from the page. */
+/** Extract the latest AI answer text from the page.
+ *
+ * DOM structure (confirmed via Playwright inspection):
+ *   .agent-chat__list__content-wrapper
+ *     └─ .agent-chat__list__content  (contains ALL messages)
+ *          ├─ .agent-chat__list__item.agent-chat__list__item--human  (user msg)
+ *          │    └─ .agent-chat__list__item__content
+ *          ├─ .agent-chat__list__item.agent-chat__list__item--ai     (AI reply)
+ *          │    └─ .agent-chat__list__item__content
+ *          ├─ ... more messages ...
+ *          └─ .agent-chat__list__placeholder
+ *
+ * We need the LAST .agent-chat__list__item--ai's .agent-chat__list__item__content.
+ */
 function getAnswerScript(): string {
   return `
     (() => {
@@ -125,25 +138,27 @@ function getAnswerScript(): string {
         .replace(/\\n{3,}/g, '\\n\\n')
         .trim();
 
-      // Method A: structured extraction - directly get AI answer content
-      const contentEl = document.querySelector(
-        '.agent-chat__list__deepseek .agent-chat__list__content-wrapper:last-child .agent-chat__list__content'
-      );
-
-      if (contentEl) {
-        const text = clean(contentEl.innerText || contentEl.textContent || '');
-        if (text && text.length > 5) return text;
+      // Method A: get the LAST AI message's content.
+      // Each message is .agent-chat__list__item with --human or --ai modifier.
+      const aiItems = document.querySelectorAll('.agent-chat__list__item--ai');
+      if (aiItems.length > 0) {
+        const lastAi = aiItems[aiItems.length - 1];
+        const content = lastAi.querySelector('.agent-chat__list__item__content');
+        if (content) {
+          const text = clean(content.innerText || content.textContent || '');
+          if (text && text.length > 5) return text;
+        }
       }
 
       // Method B: fallback - try alternative selectors
       const altSelectors = [
-        '.agent-chat__list__content-wrapper:last-child .agent-chat__list__content',
-        '.agent-dialogue__content .agent-chat__list__content',
-        '[class*="chat__list__content"]:last-child',
+        '.agent-chat__list__item--last .agent-chat__list__item__content',
+        '.agent-chat__list__item:last-child .agent-chat__list__item__content',
       ];
 
       for (const sel of altSelectors) {
-        const el = document.querySelector(sel);
+        const all = document.querySelectorAll(sel);
+        const el = all.length > 0 ? all[all.length - 1] : null;
         if (el) {
           const text = clean(el.innerText || el.textContent || '');
           if (text && text.length > 5) return text;
@@ -345,9 +360,39 @@ export const referencesCommand = cli({
     }
 
     // Click "源" button to expand references panel
+    // Find the button within the LAST AI message, not globally
     await page.wait(1.5);
     await page.evaluate(`
       (() => {
+        // Find the last AI message container
+        const aiItems = document.querySelectorAll('.agent-chat__list__item--ai');
+        const lastAiItem = aiItems.length > 0 ? aiItems[aiItems.length - 1] : null;
+
+        if (lastAiItem) {
+          // Search for "源" button within the last AI message
+          const allTexts = Array.from(lastAiItem.querySelectorAll('*'));
+          const yuanBtns = allTexts.filter(el => {
+            if (el.children.length > 0) return false;
+            const text = (el.textContent || '').trim();
+            return text === '源' && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
+          });
+          const btn = yuanBtns[yuanBtns.length - 1];
+          if (btn) {
+            let clickable = btn;
+            for (let i = 0; i < 5 && clickable; i++) {
+              if (clickable.onclick || clickable.getAttribute('role') === 'button'
+                || clickable.className?.includes('cursor') || clickable.style?.cursor === 'pointer') {
+                clickable.click();
+                return true;
+              }
+              clickable = clickable.parentElement;
+            }
+            btn.click();
+            return true;
+          }
+        }
+
+        // Fallback: search globally if not found in last AI message
         const allTexts = Array.from(document.querySelectorAll('*'));
         const yuanBtns = allTexts.filter(el => {
           if (el.children.length > 0) return false;
