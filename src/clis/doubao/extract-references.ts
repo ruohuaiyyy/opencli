@@ -20,6 +20,17 @@ export interface DoubaoReference {
   source: string;
 }
 
+/** Inline badge reference embedded in AI answer text (e.g., "携程" small tag). */
+export interface DoubaoInlineBadge {
+  text: string;       // Badge display text (e.g., "携程", "Trip.com")
+  title: string;      // Linked article title
+  url: string;        // Linked URL
+  source: string;     // Source website name (e.g., "携程")
+  context: string;    // The sentence/paragraph containing this badge
+  icon?: string;      // Icon URL if available
+  docId?: string;     // Document ID from data prop
+}
+
 /**
  * Check if the LAST [data-message-id] has a reference button and whether links are visible.
  * Uses DOM order = temporal order (newest message is last in DOM).
@@ -365,4 +376,81 @@ function extractLastKeywordsScript(): string {
  */
 export async function extractDoubaoKeywords(page: IPage): Promise<string[]> {
   return await page.evaluate(extractLastKeywordsScript()) as string[];
+}
+
+/**
+ * Extract inline reference badges from AI answer text.
+ * Badges are <span class="container-sWvQla"> elements with React fiber data.
+ * Not every AI answer contains inline badges — returns [] when none found.
+ */
+function extractInlineBadgesScript(): string {
+  return `
+    (() => {
+      const badges = document.querySelectorAll('.container-sWvQla');
+      if (!badges.length) return [];
+      const results = [];
+
+      for (const badge of badges) {
+        const fiberKey = Object.keys(badge).find(k =>
+          k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+        );
+        if (!fiberKey) continue;
+
+        let current = badge[fiberKey];
+        let depth = 0;
+        let data = null;
+
+        while (current && depth < 15) {
+          if (current.memoizedProps && current.memoizedProps.data) {
+            data = current.memoizedProps.data;
+            break;
+          }
+          current = current.return;
+          depth++;
+        }
+
+        if (!data || !data.url) continue;
+
+        // Extract context: the sentence containing this badge from its parent element
+        const parent = badge.parentElement;
+        let context = '';
+        if (parent) {
+          let beforeText = '';
+          let afterText = '';
+          let found = false;
+          for (const child of parent.childNodes) {
+            if (child === badge) { found = true; continue; }
+            if (!found) { beforeText += child.textContent || ''; }
+            else { afterText += child.textContent || ''; }
+          }
+          context = (beforeText + afterText).trim();
+        }
+
+        results.push({
+          text: (badge.textContent || '').trim(),
+          title: data.title || '',
+          url: data.url || '',
+          source: data.website_name || data.insert_text || '',
+          context,
+          icon: data.icon || '',
+          docId: data.doc_id || '',
+        });
+      }
+
+      return results;
+    })()
+  `;
+}
+
+/**
+ * Extract inline reference badges from the LAST AI answer message.
+ * Returns [] if no badges exist (most answers don't have them).
+ */
+export async function extractDoubaoInlineBadges(page: IPage): Promise<DoubaoInlineBadge[]> {
+  try {
+    const badges = await page.evaluate(extractInlineBadgesScript()) as DoubaoInlineBadge[];
+    return badges || [];
+  } catch {
+    return [];
+  }
 }

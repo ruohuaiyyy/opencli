@@ -17,7 +17,7 @@ import * as path from 'node:path';
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractDoubaoReferences, extractDoubaoKeywords, checkReferenceButton } from './extract-references.js';
+import { extractDoubaoReferences, extractDoubaoKeywords, extractDoubaoInlineBadges, checkReferenceButton } from './extract-references.js';
 import {
   resolveDoubaoAccount,
   loadDoubaoLastChatId,
@@ -838,10 +838,12 @@ export const referencesCommand = cli({
 
     // If no reference button exists, return answer only (no references)
     if (!refBtnInfo?.found) {
+      const inlineBadges = await extractDoubaoInlineBadges(page);
       const result = [{
         question,
         answer: answer || 'No response received within timeout.',
         references: [],
+        inline_references: inlineBadges,
         keywords: [],
       }];
 
@@ -891,10 +893,14 @@ saveDoubaoLastChatId(currentChatId, accountName);
     // Extract search keywords from the expanded section
     const keywords = await extractDoubaoKeywords(page);
 
+    // Extract inline badges from AI answer text (may be empty if no badges exist)
+    const inlineBadges = await extractDoubaoInlineBadges(page);
+
     const result = [{
       question,
       answer: answer || 'No response received within timeout.',
       references,
+      inline_references: inlineBadges,
       keywords,
     }];
 
