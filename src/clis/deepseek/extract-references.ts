@@ -28,6 +28,15 @@ export interface DeepseekReference {
   source: string;
 }
 
+/** Inline badge reference embedded in AI answer text (e.g., "-2" citation tag). */
+export interface DeepseekInlineBadge {
+  text: string;       // Badge display text (e.g., "-2")
+  title: string;      // Linked article title (from hover or empty)
+  url: string;        // Linked URL
+  source: string;     // Source inferred from URL hostname (e.g., "Trip.com")
+  context: string;    // The sentence/paragraph containing this badge
+}
+
 /**
  * Extract references from the side panel that appears after clicking "N 个网页".
  * The panel has heading "搜索结果" followed by structured link cards.
@@ -199,4 +208,78 @@ export async function extractNewDeepseekReferences(page: IPage, beforeUrls: stri
 /** Extract all references (no filtering). */
 export async function extractDeepseekReferences(page: IPage): Promise<DeepseekReference[]> {
   return await extractNewDeepseekReferences(page, []);
+}
+
+/**
+ * Extract inline reference badges from AI answer text.
+ * Badges are <span class="ds-markdown-cite"> elements wrapped in <a> tags.
+ * Source is inferred from URL hostname.
+ * Context is extracted by walking up DOM tree to find containing paragraph.
+ */
+function extractInlineBadgesScript(): string {
+  return `
+    (() => {
+      const cites = document.querySelectorAll('.ds-markdown-cite');
+      if (!cites.length) return [];
+      const results = [];
+
+      for (const cite of cites) {
+        const citeText = (cite.textContent || '').trim();
+
+        // Only extract inline badges (negative numbers like -1, -2, etc.)
+        // Side panel references use positive numbers (1, 2, etc.) — skip those
+        if (!citeText.startsWith('-')) continue;
+
+        const link = cite.closest('a');
+        if (!link) continue;
+
+        const url = link.href || '';
+        if (!url) continue;
+
+        // Extract source from URL hostname
+        let source = '';
+        try {
+          const hostname = new URL(url).hostname;
+          const cleanHost = hostname.replace(/^www\\./, '').replace(/^m\\./, '');
+          source = cleanHost.charAt(0).toUpperCase() + cleanHost.slice(1);
+        } catch {
+          source = '';
+        }
+
+        // Extract context by walking up DOM tree
+        let context = '';
+        let current = cite;
+        for (let depth = 0; depth < 10; depth++) {
+          const parent = current.parentElement;
+          if (!parent) break;
+          const text = parent.textContent || '';
+          if (text.length > 50 && text.length < 500) {
+            context = text.trim();
+            break;
+          }
+          current = parent;
+        }
+
+        results.push({
+          text: (cite.textContent || '').trim(),
+          title: '',
+          url,
+          source,
+          context,
+        });
+      }
+
+      return results;
+    })()
+  `;
+}
+
+/** Extract inline badges from the page. */
+export async function extractDeepseekInlineBadges(page: IPage): Promise<DeepseekInlineBadge[]> {
+  try {
+    const badges = await page.evaluate(extractInlineBadgesScript()) as DeepseekInlineBadge[];
+    return badges || [];
+  } catch {
+    return [];
+  }
 }

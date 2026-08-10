@@ -23,6 +23,17 @@ export interface YuanbaoReference {
   source: string;
 }
 
+/** Inline badge reference embedded in AI answer text. */
+export interface YuanbaoInlineBadge {
+  text: string;
+  title: string;
+  url: string;
+  source: string;
+  context: string;
+  icon?: string;
+  docId?: string;
+}
+
 function extractReferencesScript(): string {
   return `
     (() => {
@@ -69,3 +80,87 @@ function extractReferencesScript(): string {
 export async function extractYuanbaoReferences(page: IPage): Promise<YuanbaoReference[]> {
   return await page.evaluate(extractReferencesScript()) as YuanbaoReference[];
 }
+
+/**
+ * Extract inline reference badges from AI answer text.
+ * Badges are .hyc-common-markdown__ref-list__trigger elements with data-idx-list.
+ * Data comes from React fiber tree's docList prop.
+ * Returns [] if no badges exist.
+ */
+function extractInlineBadgesScript(): string {
+  return `
+    (() => {
+      const triggers = document.querySelectorAll('.hyc-common-markdown__ref-list__trigger');
+      if (!triggers.length) return [];
+      const results = [];
+
+      for (const trigger of triggers) {
+        const idxListStr = trigger.getAttribute('data-idx-list');
+        if (!idxListStr) continue;
+        const idxList = idxListStr.split(',').map(Number);
+
+        const fiberKey = Object.keys(trigger).find(k =>
+          k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+        );
+        if (!fiberKey) continue;
+
+        let current = trigger[fiberKey];
+        let depth = 0;
+        let docList = null;
+
+        while (current && depth < 15) {
+          if (current.memoizedProps && current.memoizedProps.docList) {
+            docList = current.memoizedProps.docList;
+            break;
+          }
+          current = current.return;
+          depth++;
+        }
+
+        if (!docList) continue;
+
+        // Extract context from the trigger's parent text content
+        const parent = trigger.parentElement;
+        let context = '';
+        if (parent) {
+          let beforeText = '';
+          let afterText = '';
+          let found = false;
+          for (const child of parent.childNodes) {
+            if (child === trigger) { found = true; continue; }
+            if (!found) { beforeText += child.textContent || ''; }
+            else { afterText += child.textContent || ''; }
+          }
+          context = (beforeText + afterText).trim();
+        }
+
+        for (const idx of idxList) {
+          const doc = docList[idx - 1];
+          if (!doc) continue;
+
+          results.push({
+            text: doc.web_site_name || doc.title || '',
+            title: doc.title || '',
+            url: doc.url || '',
+            source: doc.web_site_name || '',
+            context,
+            icon: doc.icon_url || '',
+            docId: doc.docId || '',
+          });
+        }
+      }
+
+      return results;
+    })()
+  `;
+}
+
+export async function extractYuanbaoInlineBadges(page: IPage): Promise<YuanbaoInlineBadge[]> {
+  try {
+    const badges = await page.evaluate(extractInlineBadgesScript()) as YuanbaoInlineBadge[];
+    return badges || [];
+  } catch {
+    return [];
+  }
+}
+

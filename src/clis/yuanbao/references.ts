@@ -13,7 +13,7 @@
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractYuanbaoReferences } from './extract-references.js';
+import { extractYuanbaoReferences, extractYuanbaoInlineBadges } from './extract-references.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -290,6 +290,50 @@ export const referencesCommand = cli({
 
     await page.wait(1);
 
+    // Check if input is ready — poll up to 15 seconds
+    const inputReady = await page.evaluate(`
+      (() => {
+        const selectors = [
+          'textarea[placeholder*="输入"]',
+          'textarea[placeholder*="发消息"]',
+          '[contenteditable="true"]',
+          'textarea',
+        ];
+        for (const sel of selectors) {
+          const el = document.querySelector(sel);
+          if (el && el.offsetHeight > 0) return true;
+        }
+        return false;
+      })()
+    `) as boolean;
+
+    if (!inputReady) {
+      const maxWaits = 30;
+      let ready = false;
+      for (let i = 0; i < maxWaits; i++) {
+        await page.wait(0.5);
+        const check = await page.evaluate(`
+          (() => {
+            const el = document.querySelector('textarea[placeholder*="输入"], [contenteditable="true"], textarea');
+            return el && el.offsetHeight > 0;
+          })()
+        `) as boolean;
+        if (check) { ready = true; break; }
+      }
+      if (!ready) {
+        return [{
+          question,
+          answer: '',
+          references: [],
+          inline_references: [],
+          error: 'Yuanbao chat input not ready after 15s. Page may have failed to load.',
+        }];
+      }
+    }
+
+    // Small buffer to ensure React components are fully mounted
+    await page.wait(0.5);
+
     // Snapshot answer before sending
     const answerBefore = await page.evaluate(getAnswerScript()) as string;
 
@@ -300,6 +344,7 @@ export const referencesCommand = cli({
         question,
         answer: '',
         references: [],
+        inline_references: [],
         error: fillResult?.error || 'Failed to inject question',
       }];
     }
@@ -421,10 +466,14 @@ export const referencesCommand = cli({
     // Extract reference sources
     const references = await extractYuanbaoReferences(page);
 
+    // Extract inline badges from AI answer text (may be empty if no badges exist)
+    const inlineBadges = await extractYuanbaoInlineBadges(page);
+
     const result = [{
       question,
       answer: answer || 'No response received within timeout.',
       references,
+      inline_references: inlineBadges,
     }];
 
     // Save to file

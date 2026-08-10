@@ -13,7 +13,7 @@
 
 import { cli, Strategy } from '../../registry.js';
 import type { IPage } from '../../types.js';
-import { extractNewDeepseekReferences, snapshotExistingRefUrls, type DeepseekReference } from './extract-references.js';
+import { extractNewDeepseekReferences, snapshotExistingRefUrls, extractDeepseekInlineBadges, type DeepseekReference } from './extract-references.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -292,7 +292,7 @@ export const referencesCommand = cli({
     { name: 'chat-id', required: false, help: 'Specific chat ID to use (overrides --reuse)' },
     { name: 'account', required: false, help: 'Account name for multi-account isolation' },
   ],
-  columns: ['question', 'answer', 'references'],
+  columns: ['question', 'answer', 'references', 'inline_references'],
   func: async (page: IPage, kwargs: any) => {
     const question = kwargs.text as string;
     const timeout = parseInt(kwargs.timeout as string, 10) || 300;
@@ -349,6 +349,7 @@ const accountName = (kwargs.account as string | undefined)?.trim() || undefined;
         question,
         answer: '',
         references: [],
+        inline_references: [],
         error: fillResult?.error || 'Failed to inject question',
       }];
     }
@@ -414,10 +415,14 @@ const accountName = (kwargs.account as string | undefined)?.trim() || undefined;
     await page.wait(1);
     const references = await extractNewDeepseekReferences(page, beforeRefUrls);
 
+    // Extract inline badges from AI answer text
+    const inlineBadges = await extractDeepseekInlineBadges(page);
+
     const result = [{
       question,
       answer: answer || 'No response received within timeout.',
       references,
+      inline_references: inlineBadges,
     }];
 
     // Save to file
