@@ -620,6 +620,8 @@ export const referencesCommand = cli({
           'textarea[placeholder*="发消息"]',
           'textarea[placeholder*="Message"]',
           'textarea',
+          // 2026-08: Doubao switched the input to a tiptap ProseMirror contenteditable div.
+          '[contenteditable="true"]',
         ];
         for (const sel of selectors) {
           const el = document.querySelector(sel);
@@ -637,7 +639,7 @@ export const referencesCommand = cli({
         await page.wait(0.5);
         const check = await page.evaluate(`
           (() => {
-            const el = document.querySelector('textarea[data-testid="chat_input_input"], textarea[placeholder*="发消息"], textarea');
+            const el = document.querySelector('textarea[data-testid="chat_input_input"], textarea[placeholder*="发消息"], textarea, [contenteditable="true"]');
             return el && el.offsetHeight > 0;
           })()
         `) as boolean;
