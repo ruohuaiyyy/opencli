@@ -17,7 +17,7 @@ import { extractNewQwenReferences, snapshotExistingRefUrls, type QwenReference }
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { getQwenTranscriptLines, sendQwenMessage, waitForQwenResponse, ensureQwenChatPage } from './utils.js';
+import { getQwenTranscriptLines, sendQwenMessage, waitForQwenResponse, ensureQwenChatPage, detectQwenCaptcha } from './utils.js';
 import {
   resolveQwenAccount,
   loadQwenLastChatId,
@@ -55,6 +55,29 @@ async function ensureChatPage(
 
   // Fallback: use existing behavior
   await ensureQwenChatPage(page);
+}
+
+/**
+ * Recover from baxia captcha: reload the current chat page (the punish
+ * dialog dies with the page) and resend the question. Returns fresh
+ * pre-send snapshots so the wait-for-answer logic stays correct.
+ */
+async function recoverFromCaptcha(page: IPage, question: string) {
+  console.error('🚨 检测到人机验证，刷新页面后重新发送问题');
+  const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+  await page.goto(currentUrl, { waitUntil: 'load', settleMs: 2500 });
+  await page.wait(3);
+  const lines = await getQwenTranscriptLines(page);
+  const answer = await page.evaluate(`
+    (() => {
+      const els = document.querySelectorAll('.qk-markdown');
+      return els.length > 0 ? (els[els.length - 1].innerText || '').trim() : '';
+    })()
+  `) as string;
+  const refUrls = await snapshotExistingRefUrls(page);
+  await sendQwenMessage(page, question);
+  await page.wait(2);
+  return { lines, answer, refUrls };
 }
 
 export const referencesCommand = cli({
@@ -119,21 +142,38 @@ export const referencesCommand = cli({
       await ensureQwenChatPage(page);
     }
 
+    // Captcha may already be up when the chat page loads — reload once to clear it.
+    if (await detectQwenCaptcha(page)) {
+      console.error('🚨 检测到人机验证，刷新页面');
+      const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
+      await page.goto(currentUrl, { waitUntil: 'load', settleMs: 2500 });
+      await page.wait(3);
+    }
+
     // Snapshot state BEFORE sending so we can distinguish new vs stale data later.
     // Qwen's page retains previous conversations, so without snapshots we'd
     // pick up old answers and old reference URLs.
-    const beforeLines = await getQwenTranscriptLines(page);
-    const beforeAnswer = await page.evaluate(`
+    let beforeLines = await getQwenTranscriptLines(page);
+    let beforeAnswer = await page.evaluate(`
       (() => {
         const els = document.querySelectorAll('.qk-markdown');
         return els.length > 0 ? (els[els.length - 1].innerText || '').trim() : '';
       })()
     `) as string;
-    const beforeRefUrls = await snapshotExistingRefUrls(page);
+    let beforeRefUrls = await snapshotExistingRefUrls(page);
 
     // Send message
     const sendMethod = await sendQwenMessage(page, question);
     await page.wait(2);
+
+    // Sending may trigger the captcha mid-flow (the request gets swallowed).
+    // Reload and resend once, refreshing the pre-send snapshots after reload.
+    if (await detectQwenCaptcha(page)) {
+      const recovered = await recoverFromCaptcha(page, question);
+      beforeLines = recovered.lines;
+      beforeAnswer = recovered.answer;
+      beforeRefUrls = recovered.refUrls;
+    }
 
     // Wait for answer completion (skips content matching beforeAnswer)
     const answer = await waitForQwenResponse(page, beforeLines, question, timeout, beforeAnswer);

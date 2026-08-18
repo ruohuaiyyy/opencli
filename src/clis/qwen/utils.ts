@@ -543,6 +543,27 @@ export async function waitForQwenResponse(
 }
 
 /**
+ * Detect Qwen's baxia (Alibaba anti-bot) human verification dialog.
+ *
+ * The dialog is injected into the main document as iframe#baxia-dialog-content
+ * (src contains "_____tmd_____/punish"), wrapped by div.baxia-dialog-content.
+ * Reloading the chat page clears the punish page, so the flow can proceed
+ * without manual verification.
+ */
+export async function detectQwenCaptcha(page: IPage): Promise<boolean> {
+  const found = await page.evaluate(`
+    (() => {
+      const iframe = document.getElementById('baxia-dialog-content')
+        || document.querySelector('iframe[src*="_____tmd_____"]');
+      if (!iframe) return false;
+      const rect = iframe.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    })()
+  `).catch(() => false);
+  return found === true;
+}
+
+/**
  * Start a new conversation.
  */
 export async function startNewQwenChat(page: IPage): Promise<string> {
