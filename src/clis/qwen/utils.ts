@@ -251,43 +251,23 @@ function clickNewChatScript(): string {
 function isStreamingScript(): string {
   return `
     (() => {
-      // Only check elements that are likely AI response indicators,
-      // NOT general UI loading elements like scroll-to-bottom, image loading, etc.
-      const allElements = document.querySelectorAll('*');
-      
-      // Collect class names, excluding common UI component loading patterns
-      const streamingClassPatterns = ['typing', 'streaming', 'thinking', 'generating'];
-      const loadingPatterns = ['loading'];  // Separate handling below
-      
-      // Check for clear streaming/typing/generating indicators
+      // Strongest signal: the send button morphs into a stop button while generating.
+      const stopBtn = document.querySelector('button[aria-label*="停止"], button[aria-label*="Stop"], button[class*="stop"]');
+      if (stopBtn) {
+        const style = window.getComputedStyle(stopBtn);
+        if (style.display !== 'none' && style.visibility !== 'hidden') return true;
+      }
+
+      // Clear streaming/typing/generating indicators anywhere in the answer area
       const streamingIndicators = document.querySelectorAll(
-        '[class*="typing"]',
-        '[class*="streaming"]', 
-        '[class*="thinking"]',
-        '[class*="generating"]',
+        '.qk-markdown [class*="typing"], .answerItem [class*="typing"]',
       );
       if (streamingIndicators.length > 0) return true;
-      
-      // For "loading" class, only count it if it's within the answer area (.qk-markdown or .answerItem)
-      // Exclude: scrollToBottomLoading, imageLoading, etc.
-      const loadingElements = document.querySelectorAll('[class*="loading"]');
-      let hasRelevantLoading = false;
-      loadingElements.forEach((el) => {
-        const cls = (el.className || '').toLowerCase();
-        // Skip known UI component loading patterns
-        if (cls.includes('scroll') || cls.includes('image') || cls.includes('img') || 
-            cls.includes('skeleton') || cls.includes('placeholder')) {
-          return;
-        }
-        // Only count if within answer area
-        if (el.closest('.qk-markdown') || el.closest('.answerItem') || el.closest('[class*="answer"]')) {
-          hasRelevantLoading = true;
-        }
-      });
-      if (hasRelevantLoading) return true;
 
-      const allText = document.body.innerText || '';
-      if (allText.includes('思考中') || allText.includes('生成中') || allText.includes('正在处理')) {
+      // Text-based signals only inside the answer area (not global UI)
+      const answerArea = document.querySelector('.qk-markdown, .answerItem, [class*="answer"]');
+      const areaText = answerArea ? (answerArea.textContent || '') : '';
+      if (areaText.includes('思考中') || areaText.includes('生成中') || areaText.includes('正在处理')) {
         return true;
       }
 
@@ -475,9 +455,7 @@ export async function waitForQwenResponse(
     .trim();
 
   // Snapshot the .qk-markdown count BEFORE sending. Qwen keeps previous
-  // conversations in the DOM; a "new answer" only starts when the count
-  // increases for 2 consecutive polls (one poll could be render flicker).
-  const beforeCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
+  // conversations in the DOM; Method B only fires when the count increases.
 
   // Extract the answer for OUR question: find the question bubble containing
   // promptText, then take the first .qk-markdown rendered after it. This is
@@ -509,9 +487,9 @@ export async function waitForQwenResponse(
     const direct = await page.evaluate(answerAfterQuestionScript(promptText)) as string;
     if (direct && direct.length > 10) return sanitizeCandidate(direct);
 
-    // Method B: last .qk-markdown only if count increased since we sent
+    // Method B: last .qk-markdown as fallback
     const currentCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
-    if (currentCount > beforeCount) {
+    if (currentCount > 0) {
       const markdownText = await page.evaluate(`
         (() => {
           const markdownEls = document.querySelectorAll('.qk-markdown');
@@ -541,7 +519,9 @@ export async function waitForQwenResponse(
   let answer = '';
   let stableCount = 0;
   let streamingDetected = false;
-  let newAnswerObservedCount = 0;
+  // Short content after our question could be a reference card title, not the
+  // actual answer — require a minimum length before treating it as an answer.
+  const MIN_ANSWER_LENGTH = 30;
 
   for (let i = 0; i < maxPolls; i++) {
     await page.wait(i === 0 ? 1.5 : pollInterval);
@@ -553,17 +533,8 @@ export async function waitForQwenResponse(
     // Skip content that existed BEFORE we sent the message (previous conversation's answer)
     if (beforeAnswer && current === beforeAnswer) continue;
 
-    // A new answer only counts after the .qk-markdown count has increased
-    // for 2 consecutive polls — protects against pre-answer DOM flicker.
-    const currentCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
-    if (currentCount > beforeCount) {
-      newAnswerObservedCount += 1;
-    } else {
-      newAnswerObservedCount = 0;
-    }
-    if (newAnswerObservedCount < 2) continue;
-
-    // Check if AI is still streaming
+    // Check if AI is still streaming — this is the strongest signal.
+    // Reference cards may render before the answer but never trigger streaming.
     const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
     if (isStreaming) {
       streamingDetected = true;
@@ -572,6 +543,13 @@ export async function waitForQwenResponse(
       continue;
     }
 
+    // Once streaming has been observed, only then do we consider content as
+    // the answer. Short non-streaming content (reference cards etc.) is ignored.
+    if (!streamingDetected) continue;
+
+    // Filter out short reference-card text that appears before the real answer
+    if (current.length < MIN_ANSWER_LENGTH) continue;
+
     if (current === answer) {
       stableCount += 1;
     } else {
@@ -579,7 +557,7 @@ export async function waitForQwenResponse(
       stableCount = 1;
     }
 
-    const requiredStable = streamingDetected ? 4 : 2;
+    const requiredStable = 4;
     if (stableCount >= requiredStable) break;
   }
 
