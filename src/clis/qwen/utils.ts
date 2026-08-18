@@ -474,25 +474,58 @@ export async function waitForQwenResponse(
     .replace(/内容由AI生成/g, '')
     .trim();
 
-  const getCandidate = async (): Promise<string> => {
-    // Method A: structured extraction — get the LAST (most recent) .qk-markdown element.
-    // querySelector would return the FIRST match which could be from a previous conversation.
-    const markdownText = await page.evaluate(`
-      (() => {
-        const markdownEls = document.querySelectorAll('.qk-markdown');
-        if (markdownEls.length > 0) {
-          const latest = markdownEls[markdownEls.length - 1];
-          return (latest.innerText || '').trim();
-        }
-        return '';
-      })()
-    `) as string;
+  // Snapshot the .qk-markdown count BEFORE sending. Qwen keeps previous
+  // conversations in the DOM; a "new answer" only starts when the count
+  // increases for 2 consecutive polls (one poll could be render flicker).
+  const beforeCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
 
-    if (markdownText && markdownText.length > 10) {
-      return sanitizeCandidate(markdownText);
+  // Extract the answer for OUR question: find the question bubble containing
+  // promptText, then take the first .qk-markdown rendered after it. This is
+  // precise even when previous conversations exist on the page.
+  const answerAfterQuestionScript = (prompt: string): string => `
+    (() => {
+      const all = Array.from(document.querySelectorAll('*'));
+      const leaves = all.filter((el) => {
+        if (el.children.length > 0) return false;
+        const text = (el.textContent || '').trim();
+        return text.includes(${JSON.stringify(prompt).slice(0, 200)});
+      });
+      const questionEl = leaves[leaves.length - 1];
+      if (!questionEl) return '';
+
+      let node = questionEl.nextElementSibling;
+      let safety = 0;
+      while (node && safety++ < 20) {
+        const md = node.querySelector?.('.qk-markdown');
+        if (md) return (md.innerText || '').trim();
+        node = node.nextElementSibling;
+      }
+      return '';
+    })()
+  `;
+
+  const getCandidate = async (): Promise<string> => {
+    // Method A: precise — answer rendered after our question bubble
+    const direct = await page.evaluate(answerAfterQuestionScript(promptText)) as string;
+    if (direct && direct.length > 10) return sanitizeCandidate(direct);
+
+    // Method B: last .qk-markdown only if count increased since we sent
+    const currentCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
+    if (currentCount > beforeCount) {
+      const markdownText = await page.evaluate(`
+        (() => {
+          const markdownEls = document.querySelectorAll('.qk-markdown');
+          if (markdownEls.length > 0) {
+            const latest = markdownEls[markdownEls.length - 1];
+            return (latest.innerText || '').trim();
+          }
+          return '';
+        })()
+      `) as string;
+      if (markdownText && markdownText.length > 10) return sanitizeCandidate(markdownText);
     }
 
-    // Method B: fallback to transcript lines
+    // Method C: fallback to transcript lines
     const lines = await getQwenTranscriptLines(page);
     const additions = lines
       .filter((line) => !beforeSet.has(line))
@@ -508,6 +541,7 @@ export async function waitForQwenResponse(
   let answer = '';
   let stableCount = 0;
   let streamingDetected = false;
+  let newAnswerObservedCount = 0;
 
   for (let i = 0; i < maxPolls; i++) {
     await page.wait(i === 0 ? 1.5 : pollInterval);
@@ -518,6 +552,16 @@ export async function waitForQwenResponse(
 
     // Skip content that existed BEFORE we sent the message (previous conversation's answer)
     if (beforeAnswer && current === beforeAnswer) continue;
+
+    // A new answer only counts after the .qk-markdown count has increased
+    // for 2 consecutive polls — protects against pre-answer DOM flicker.
+    const currentCount = (await page.evaluate('document.querySelectorAll(".qk-markdown").length').catch(() => 0)) as number;
+    if (currentCount > beforeCount) {
+      newAnswerObservedCount += 1;
+    } else {
+      newAnswerObservedCount = 0;
+    }
+    if (newAnswerObservedCount < 2) continue;
 
     // Check if AI is still streaming
     const isStreaming = await page.evaluate(isStreamingScript()) as boolean;
