@@ -27,7 +27,12 @@ import {
 
 const YUANBAO_CHAT_URL = 'https://yuanbao.tencent.com/chat';
 
-/** Inject text into Yuanbao chat input (React-compatible value setter). */
+/** Inject text into Yuanbao chat input.
+ *
+ * New Yuanbao UI (verified 2026-08): input is a Quill editor
+ * (`.ql-editor[contenteditable="true"]`), no more textarea.
+ * execCommand('insertText') + input event updates Quill state correctly.
+ */
 function fillInputScript(text: string): string {
   return `
     (() => {
@@ -39,12 +44,11 @@ function fillInputScript(text: string): string {
       };
 
       const selectors = [
+        '.ql-editor[contenteditable="true"]',
         'textarea[placeholder*="输入"]',
-        'textarea[placeholder*="Message"]',
         '.chat-input textarea',
         '[class*="chat-input"] textarea',
         '[class*="input-box"] textarea',
-        'textarea[placeholder*="发消息"]',
         '[contenteditable="true"]',
         'textarea',
       ];
@@ -74,16 +78,28 @@ function fillInputScript(text: string): string {
         selection?.removeAllRanges();
         selection?.addRange(range);
         document.execCommand('insertText', false, ${JSON.stringify(text)});
+        input.dispatchEvent(new Event('input', { bubbles: true }));
       }
       return { ok: true };
     })()
   `;
 }
 
-/** Click send button or return 'enter' as fallback. */
+/** Send the composed message.
+ *
+ * New Yuanbao UI (verified 2026-08): the send button
+ * (`[data-new-input-control="send"]`) ignores synthetic DOM events, but a
+ * synthetic Enter keydown on the focused Quill editor DOES send. Always
+ * return 'enter' for the new UI; legacy button-click path kept for the
+ * old textarea UI in case it is still deployed somewhere.
+ */
 function sendScript(): string {
   return `
     (() => {
+      // New UI: Quill editor — signal caller to press Enter on the editor
+      const editor = document.querySelector('.ql-editor[contenteditable="true"]');
+      if (editor && editor.getBoundingClientRect().width > 0) return 'enter';
+
       const isVisible = (el) => {
         if (!(el instanceof HTMLElement)) return false;
         const s = window.getComputedStyle(el);
@@ -184,10 +200,25 @@ function getAnswerScript(): string {
   `;
 }
 
-/** Check if AI is still generating (streaming indicator). */
+/** Check if AI is still generating.
+ *
+ * New Yuanbao UI (verified 2026-08): the last conversation item carries
+ * `data-conv-outputting="true"` while streaming and flips to "false" with
+ * `data-conv-status="finished"/"stopped"` when done — far more reliable
+ * than class-name heuristics. Legacy class checks kept as fallback.
+ */
 function isStreamingScript(): string {
   return `
     (() => {
+      // New UI: authoritative per-message state attributes
+      const items = document.querySelectorAll('.agent-chat__list__item[data-conv-speaker="ai"]');
+      const lastAi = items.length > 0 ? items[items.length - 1] : null;
+      if (lastAi) {
+        if (lastAi.getAttribute('data-conv-outputting') === 'true') return true;
+        const status = lastAi.getAttribute('data-conv-status');
+        if (status === 'finished' || status === 'stopped') return false;
+      }
+
       const indicators = document.querySelectorAll(
         '[class*="loading"]',
         '[class*="typing"]',
@@ -294,6 +325,7 @@ export const referencesCommand = cli({
     const inputReady = await page.evaluate(`
       (() => {
         const selectors = [
+          '.ql-editor[contenteditable="true"]',
           'textarea[placeholder*="输入"]',
           'textarea[placeholder*="发消息"]',
           '[contenteditable="true"]',
@@ -314,7 +346,7 @@ export const referencesCommand = cli({
         await page.wait(0.5);
         const check = await page.evaluate(`
           (() => {
-            const el = document.querySelector('textarea[placeholder*="输入"], [contenteditable="true"], textarea');
+            const el = document.querySelector('.ql-editor[contenteditable="true"], textarea[placeholder*="输入"], [contenteditable="true"], textarea');
             return el && el.offsetHeight > 0;
           })()
         `) as boolean;
@@ -350,20 +382,38 @@ export const referencesCommand = cli({
     }
     await page.wait(0.5);
 
-    // Enable internet search to get reference sources
+    // Enable internet search to get reference sources.
+    // New UI (verified 2026-08): "+" menu → 联网搜索 menuitem. Enabled state
+    // shows as a chip button with aria-label="联网搜索 remove".
     await page.evaluate(`
       (() => {
-        const btn = document.querySelector('.yb-internet-search-btn');
-        if (!btn) return false;
-        const state = btn.getAttribute('dt-internet-search');
-        if (state === 'closeInternetSearch') {
-          btn.click();
-          return true;
-        }
-        return state === 'openInternetSearch';
+        // Already enabled? (chip with remove affordance stays in the input row)
+        const alreadyOn = document.querySelector('button[aria-label="${'联网搜索'} remove"]');
+        if (alreadyOn) return 'already-on';
+
+        // Open the add-tools popover
+        const trigger = document.querySelector('[data-new-input-control="add-tools-trigger"]');
+        if (!trigger) return 'no-trigger';
+        trigger.click();
+        return 'opened';
       })()
     `);
-    await page.wait(0.5);
+    await page.wait(1);
+    await page.evaluate(`
+      (() => {
+        // Click the 联网搜索 menuitem (match via escaped unicode to survive transport)
+        const label = String.fromCharCode(0x8054, 0x7F51, 0x641C, 0x7D22);
+        const menu = document.querySelector('[data-new-input-control="add-tools"] [role="menu"]');
+        if (!menu) return 'no-menu';
+        const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+        const target = items.find(el => (el.textContent || '').indexOf(label) !== -1);
+        if (!target) return 'no-item';
+        ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(t =>
+          target.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true })));
+        return 'clicked';
+      })()
+    `);
+    await page.wait(0.8);
 
     // Send message
     const sendMethod = await page.evaluate(sendScript()) as string;
@@ -405,60 +455,49 @@ export const referencesCommand = cli({
     }
 
     // Click "源" button to expand references panel
-    // Find the button within the LAST AI message, not globally
+    // New UI (verified 2026-08): #search-guide-tool inside the LAST AI message.
+    // Must scrollIntoView first — old messages keep their own 源 buttons, and
+    // without scoping the panel shows the wrong (older) reference set.
     await page.wait(1.5);
     await page.evaluate(`
       (() => {
-        // Find the last AI message container
         const aiItems = document.querySelectorAll('.agent-chat__list__item--ai');
         const lastAiItem = aiItems.length > 0 ? aiItems[aiItems.length - 1] : null;
 
+        // New UI: citation toolbar button scoped to the last AI message
         if (lastAiItem) {
-          // Search for "源" button within the last AI message
-          const allTexts = Array.from(lastAiItem.querySelectorAll('*'));
-          const yuanBtns = allTexts.filter(el => {
-            if (el.children.length > 0) return false;
-            const text = (el.textContent || '').trim();
-            return text === '源' && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
-          });
-          const btn = yuanBtns[yuanBtns.length - 1];
-          if (btn) {
-            let clickable = btn;
-            for (let i = 0; i < 5 && clickable; i++) {
-              if (clickable.onclick || clickable.getAttribute('role') === 'button'
-                || clickable.className?.includes('cursor') || clickable.style?.cursor === 'pointer') {
-                clickable.click();
-                return true;
-              }
-              clickable = clickable.parentElement;
-            }
-            btn.click();
-            return true;
+          const tools = lastAiItem.querySelectorAll('#search-guide-tool');
+          const tool = tools.length > 0 ? tools[tools.length - 1] : null;
+          if (tool) {
+            tool.scrollIntoView({ block: 'center' });
+            ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(t =>
+              tool.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true })));
+            return 'new-ui-clicked';
           }
         }
 
-        // Fallback: search globally if not found in last AI message
-        const allTexts = Array.from(document.querySelectorAll('*'));
-        const yuanBtns = allTexts.filter(el => {
-          if (el.children.length > 0) return false;
-          const text = (el.textContent || '').trim();
-          return text === '源' && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE';
-        });
-        const btn = yuanBtns[yuanBtns.length - 1];
-        if (btn) {
-          let clickable = btn;
-          for (let i = 0; i < 5 && clickable; i++) {
-            if (clickable.onclick || clickable.getAttribute('role') === 'button'
-              || clickable.className?.includes('cursor') || clickable.style?.cursor === 'pointer') {
-              clickable.click();
-              return true;
-            }
-            clickable = clickable.parentElement;
+        // Legacy UI fallback: find the leaf "源" text in the last AI message
+        const yuanText = String.fromCharCode(0x6E90);
+        const scope = lastAiItem || document;
+        const leaves = Array.from(scope.querySelectorAll('*')).filter(el =>
+          el.children.length === 0
+          && (el.textContent || '').trim() === yuanText
+          && el.tagName !== 'SCRIPT' && el.tagName !== 'STYLE'
+        );
+        const btn = leaves[leaves.length - 1];
+        if (!btn) return 'no-source-button';
+
+        let clickable = btn;
+        for (let i = 0; i < 5 && clickable; i++) {
+          if (clickable.onclick || clickable.getAttribute('role') === 'button'
+            || (clickable.className || '').includes('cursor') || clickable.style?.cursor === 'pointer') {
+            clickable.click();
+            return 'legacy-clicked';
           }
-          btn.click();
-          return true;
+          clickable = clickable.parentElement;
         }
-        return false;
+        btn.click();
+        return 'legacy-leaf-clicked';
       })()
     `);
     await page.wait(2);

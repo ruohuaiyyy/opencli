@@ -85,12 +85,19 @@ export async function extractYuanbaoReferences(page: IPage): Promise<YuanbaoRefe
  * Extract inline reference badges from AI answer text.
  * Badges are .hyc-common-markdown__ref-list__trigger elements with data-idx-list.
  * Data comes from React fiber tree's docList prop.
+ * Scoped to the LAST AI message — each message has its own badges and its
+ * own docList; querying globally mixes badges from earlier answers.
  * Returns [] if no badges exist.
  */
 function extractInlineBadgesScript(): string {
   return `
     (() => {
-      const triggers = document.querySelectorAll('.hyc-common-markdown__ref-list__trigger');
+      // Scope to the last AI message so multi-turn chats only yield
+      // the current answer's badges (verified: each message has its own docList).
+      const aiItems = document.querySelectorAll('.agent-chat__list__item--ai');
+      const lastAi = aiItems.length > 0 ? aiItems[aiItems.length - 1] : null;
+      const scopeRoot = lastAi || document;
+      const triggers = scopeRoot.querySelectorAll('.hyc-common-markdown__ref-list__trigger');
       if (!triggers.length) return [];
       const results = [];
 
