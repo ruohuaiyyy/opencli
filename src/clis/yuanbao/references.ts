@@ -382,38 +382,35 @@ export const referencesCommand = cli({
     }
     await page.wait(0.5);
 
-    // Enable internet search to get reference sources.
-    // New UI (verified 2026-08): "+" menu → 联网搜索 menuitem. Enabled state
-    // shows as a chip button with aria-label="联网搜索 remove".
+    // Internet search: no explicit toggle needed.
+    // New UI (verified 2026-09): the 联网搜索 menuitem was removed from the
+    // "+" menu and web search is ON by default — answers carry real web
+    // citations (source button + reference panel) without any toggle step.
+    // Legacy flows (chip state, "+" menu item) kept as no-op detection only.
     await page.evaluate(`
       (() => {
-        // Already enabled? (chip with remove affordance stays in the input row)
-        const alreadyOn = document.querySelector('button[aria-label="${'联网搜索'} remove"]');
-        if (alreadyOn) return 'already-on';
-
-        // Open the add-tools popover
-        const trigger = document.querySelector('[data-new-input-control="add-tools-trigger"]');
-        if (!trigger) return 'no-trigger';
-        trigger.click();
-        return 'opened';
-      })()
-    `);
-    await page.wait(1);
-    await page.evaluate(`
-      (() => {
-        // Click the 联网搜索 menuitem (match via escaped unicode to survive transport)
         const label = String.fromCharCode(0x8054, 0x7F51, 0x641C, 0x7D22);
+        // Enabled if the remove-chip is present (older builds)
+        const chip = Array.from(document.querySelectorAll('button[aria-label]')).find(b =>
+          (b.getAttribute('aria-label') || '').indexOf(label) !== -1
+          && (b.getAttribute('aria-label') || '').includes('remove'));
+        if (chip) return 'already-on';
+        // Menuitem path (older builds): enable it if present
         const menu = document.querySelector('[data-new-input-control="add-tools"] [role="menu"]');
-        if (!menu) return 'no-menu';
-        const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-        const target = items.find(el => (el.textContent || '').indexOf(label) !== -1);
-        if (!target) return 'no-item';
-        ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(t =>
-          target.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true })));
-        return 'clicked';
+        if (menu) {
+          const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+          const target = items.find(el => (el.textContent || '').indexOf(label) !== -1);
+          if (target) {
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(t =>
+              target.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true })));
+            return 'menu-item-clicked';
+          }
+        }
+        // Current build: always-on, nothing to do
+        return 'default-on';
       })()
     `);
-    await page.wait(0.8);
+    await page.wait(0.5);
 
     // Send message
     const sendMethod = await page.evaluate(sendScript()) as string;
