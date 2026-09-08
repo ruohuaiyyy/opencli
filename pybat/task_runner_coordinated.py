@@ -433,10 +433,12 @@ def run_loop(worker_id, task_type, restart_after):
 
             success = process_task(task, worker_id, current_account, task_type)
 
-            report_result(task_id, status=1 if success else 0, worker_id=worker_id)
-
+            # 先记账并落盘再上报：模型次数已真实消耗，避免上报异常时漏记导致账号上限失效
             task_count_since_restart += 1
             account_task_counts[current_account] = account_task_counts.get(current_account, 0) + 1
+            save_state(task_type, {"accountIndex": account_index, "taskCountSinceRestart": task_count_since_restart, "accountTaskCounts": account_task_counts})
+
+            report_result(task_id, status=1 if success else 0, worker_id=worker_id)
 
             # ========== 检查当前账号是否达到每天执行上限（仅限特定 task_type） ==========
             if task_type.startswith(ACCOUNT_LIMIT_TASK_TYPE_PREFIX) and account_task_counts.get(current_account, 0) >= MAX_TASKS_PER_ACCOUNT:
