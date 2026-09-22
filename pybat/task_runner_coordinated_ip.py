@@ -41,7 +41,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # 配置（同原脚本）
-TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.openclaw-center.inner3.beta.qunar.com")
+TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.live-marketing.inner3.beta.qunar.com")
 WORKER_ID = os.environ.get("WORKER_ID", "lqxCopaw")
 TASK_TYPE = os.environ.get("TASK_TYPE", "default")
 PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "5"))
@@ -50,7 +50,7 @@ HTTP_TIMEOUT = 30
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "300"))
 MAX_CONSECUTIVE_FAILURES = 2
 MAX_TASKS_PER_ACCOUNT = 20  # 每个账号每天最多执行任务次数
-ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 限制账号次数的 task_type 前缀，匹配此前缀的所有 task_type 生效
+ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-"  # 限制账号次数的 task_type 前缀，匹配此前缀的所有 task_type 生效
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"

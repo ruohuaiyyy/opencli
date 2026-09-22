@@ -50,7 +50,7 @@ HTTP_TIMEOUT = 300
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "300"))
 MAX_CONSECUTIVE_FAILURES = 2
 MAX_TASKS_PER_ACCOUNT = 40  # 每个账号每天最多执行任务次数
-ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 需要限制账号次数的 task_type 前缀，匹配所有 opencli-analysis-doubao-* 子类型
+ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-"  # 需要限制账号次数的 task_type 前缀，匹配所有 opencli-analysis-doubao-* 子类型
 
 # 账号文件
 ACCOUNTS_FILE = Path.home() / ".opencli" / "accounts" / "doubao.json"
