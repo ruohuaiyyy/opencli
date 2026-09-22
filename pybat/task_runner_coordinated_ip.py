@@ -31,6 +31,7 @@ from coordinator import (
     finish_switch,
     all_workers_idle,
     set_restart_chrome_func,
+    is_leader_task_type,
 )
 
 logging.basicConfig(
@@ -605,8 +606,8 @@ def run_loop(worker_id, task_type, restart_after):
                     log.info("[%s] Task #%d reached, switching to account: %s",
                           worker_id, restart_after, new_account)
 
-                    # 只有主导任务才能执行切换
-                    if is_leader:
+                    # 只有主导任务类型才能执行切换（协调器内含 leader 失联/无任务时的接管判定）
+                    if is_leader_task_type(task_type):
                         coordinated_restart_chrome(worker_id, task_type, new_account)
 
                     current_account = new_account
@@ -666,7 +667,8 @@ def run_loop(worker_id, task_type, restart_after):
                     new_account = accounts[account_index]
                     task_count_since_restart = 0
                     log.info("[%s] Switching to account: %s", worker_id, new_account)
-                    if is_leader:
+                    # 只有主导任务类型才能执行切换（协调器内含 leader 失联/无任务时的接管判定）
+                    if is_leader_task_type(task_type):
                         coordinated_restart_chrome(worker_id, task_type, new_account)
                     current_account = new_account
 

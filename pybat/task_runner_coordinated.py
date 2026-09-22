@@ -31,6 +31,7 @@ from coordinator import (
     finish_switch,
     all_workers_idle,
     set_restart_chrome_func,
+    is_leader_task_type,
 )
 
 logging.basicConfig(
@@ -40,15 +41,15 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # 配置（同原脚本）
-TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.openclaw-center.inner3.beta.qunar.com")
+TASK_CENTER_URL = os.environ.get("TASK_CENTER_URL", "http://mkt-openclaw-center.market-analysis.inner3.beta.qunar.com/")
 WORKER_ID = os.environ.get("WORKER_ID", "lqxCopaw")
 TASK_TYPE = os.environ.get("TASK_TYPE", "default")
 PULL_INTERVAL = int(os.environ.get("PULL_INTERVAL", "5"))
 EXECUTE_INTERVAL = int(os.environ.get("EXECUTE_INTERVAL", "100"))
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 300
 COMMAND_TIMEOUT = int(os.environ.get("COMMAND_TIMEOUT", "300"))
 MAX_CONSECUTIVE_FAILURES = 2
-MAX_TASKS_PER_ACCOUNT = 20  # 每个账号每天最多执行任务次数
+MAX_TASKS_PER_ACCOUNT = 40  # 每个账号每天最多执行任务次数
 ACCOUNT_LIMIT_TASK_TYPE_PREFIX = "opencli-analysis-doubao"  # 需要限制账号次数的 task_type 前缀，匹配所有 opencli-analysis-doubao-* 子类型
 
 # 账号文件
@@ -273,6 +274,9 @@ def process_task(task, worker_id, account, task_type):
     prompt = task.get("prompt", "")
     try:
         command, callback_config = parse_prompt(prompt)
+        # yuanbao 任务不带 --reuse，每次重新分析
+        if task_type.startswith("opencli-analysis-yuanbao"):
+            command = re.sub(r"\s+--reuse\b", "", command)
         log.info("Parsed command: %s", command)
         if "--account" not in command:
             command = f"{command.rstrip()} --account {account}"
@@ -401,8 +405,8 @@ def run_loop(worker_id, task_type, restart_after):
                     log.info("[%s] Task #%d reached, switching to account: %s",
                           worker_id, restart_after, new_account)
 
-                    # 只有主导任务才能执行切换
-                    if is_leader:
+                    # 只有主导任务类型才能执行切换（协调器内含 leader 失联/无任务时的接管判定）
+                    if is_leader_task_type(task_type):
                         coordinated_restart_chrome(worker_id, task_type, new_account)
 
                     current_account = new_account
@@ -462,7 +466,8 @@ def run_loop(worker_id, task_type, restart_after):
                     new_account = accounts[account_index]
                     task_count_since_restart = 0
                     log.info("[%s] Switching to account: %s", worker_id, new_account)
-                    if is_leader:
+                    # 只有主导任务类型才能执行切换（协调器内含 leader 失联/无任务时的接管判定）
+                    if is_leader_task_type(task_type):
                         coordinated_restart_chrome(worker_id, task_type, new_account)
                     current_account = new_account
 

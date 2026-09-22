@@ -23,6 +23,12 @@ IDLE_TIMEOUT = 60
 # BUSY_TIMEOUT: Leader 忙碌时（执行长任务），容忍更长时间（COMMAND_TIMEOUT默认为300s）
 BUSY_TIMEOUT = 400
 
+# 主导任务 task_type 前缀：仅这些前缀的任务具备主导资格，可发起 Chrome 切换
+LEADER_ELIGIBLE_PREFIXES = ("opencli-analysis-yuanbao", "opencli-analysis-qwen")
+# Leader 心跳超时（秒）：心跳 = 最近一次执行任务时间（last_busy_time），
+# 超过该时长未执行任务视为失联/无任务，允许其他主导任务接管
+LEADER_HEARTBEAT_TIMEOUT = 600
+
 
 def init_shared_dir():
     SHARED_DIR.mkdir(parents=True, exist_ok=True)
@@ -46,6 +52,53 @@ def _load_state():
 
 def _save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def is_leader_task_type(task_type):
+    """判断 task_type 是否具备主导资格（yuanbao/qwen 前缀）"""
+    return task_type.startswith(LEADER_ELIGIBLE_PREFIXES)
+
+
+def _leader_takeover_allowed(state, unique_key, task_type):
+    """判断 unique_key 是否可成为/接管 leader，返回 (allowed, took_over)
+
+    took_over=True 表示发生接管（原 leader 被替换），调用方需更新 state["leader"]
+    判定规则：
+    1. 我就是 leader → 允许
+    2. 我不具备主导资格 → 拒绝（除非当前没有 leader，见规则 3 的兜底）
+    3. leader 不存在/记录丢失 → 允许（非主导任务兜底担任临时 leader）
+    4. leader 超过 LEADER_HEARTBEAT_TIMEOUT 未执行任务 → 允许接管
+    5. leader 10 分钟内执行过任务 → 拒绝
+    """
+    if unique_key == state.get("leader"):
+        return True, False
+
+    leader_key = state.get("leader")
+    leader_info = state.get("workers", {}).get(leader_key, {}) if leader_key else {}
+
+    # 我不具备主导资格：仅当没有 leader 或 leader 记录丢失时兜底担任临时 leader
+    if not is_leader_task_type(task_type):
+        if not leader_key or not leader_info:
+            return True, True
+        return False, False
+
+    # 我是主导任务：
+    if not leader_key or not leader_info:
+        # leader 不存在或记录丢失 → 接管
+        return True, True
+
+    # 现 leader 不具备主导资格 → 立即接管（注册即接管，避免等待）
+    leader_task_type = leader_info.get("type", "")
+    if not is_leader_task_type(leader_task_type):
+        return True, True
+
+    # leader 心跳超时（超过阈值未执行任务）→ 接管
+    last_busy = leader_info.get("last_busy_time", 0)
+    if time.time() - last_busy > LEADER_HEARTBEAT_TIMEOUT:
+        return True, True
+
+    # leader 最近仍在执行任务 → 拒绝
+    return False, False
 
 
 def _check_and_elect_leader(state, current_key):
@@ -95,37 +148,43 @@ def _lock():
 
 
 def register_worker(worker_id, task_type):
-    """注册工作进程，返回是否为主导任务（最先注册的就是主导）
-    
+    """注册工作进程，返回是否为主导任务（leader 或被允许接管的进程）
+
     用 worker_id + task_type 作为唯一标识，允许不同 task_type 共用同一个 worker_id
+    选主规则见 _leader_takeover_allowed：无 leader 时接任（非主导兜底为临时 leader）；
+    leader 心跳超时或我不合格 leader 而我合格时接管
     """
     init_shared_dir()
-    
+
     # 用 worker_id + task_type 作为唯一 key
     unique_key = f"{worker_id}_{task_type}"
-    
+
     with _lock():
         state = _load_state()
-        
-        # 检查 Leader 是否失联，如果失联则自动接任
-        _check_and_elect_leader(state, unique_key)
 
         # 检查是否已经注册过（用 unique_key 判断）
         is_first_registration = unique_key not in state["workers"]
-        
+
         state["workers"][unique_key] = {
             "worker_id": worker_id,
             "type": task_type,
             "status": WorkerStatus.IDLE.value,
             "task_count": 0,
-            "last_active": time.time()
+            "last_active": time.time(),
+            # 心跳：最近一次执行任务时间，注册时初始化为当前时间防止刚启动即被接管
+            "last_busy_time": time.time()
         }
-        
-        # 注册逻辑更新：此时 leader 已在 _check_and_elect_leader 中自动处理
-        # 只有当 leader 依然为空时，且我是首次注册，才接任 leader
-        if is_first_registration and not state.get("leader"):
+
+        # 选主：无 leader / leader 失联 / 我合格且 leader 不合格 → 接任或接管
+        allowed, took_over = _leader_takeover_allowed(state, unique_key, task_type)
+        if allowed and took_over:
+            logging.info("Leader takeover: %s takes over leadership from %s",
+                         unique_key, state.get("leader"))
             state["leader"] = unique_key
-        
+            # 清理可能残留的切换状态，避免死锁
+            state.pop("switch_initiator", None)
+            state.pop("switch_start_time", None)
+
         is_leader = (unique_key == state["leader"])
         _save_state(state)
         return is_leader
@@ -133,7 +192,7 @@ def register_worker(worker_id, task_type):
 
 def update_status(worker_id, task_type, status, task_count=None):
     """更新工作进程状态
-    
+
     参数:
         worker_id: 工作进程 ID
         task_type: 任务类型（用于构建唯一标识）
@@ -143,18 +202,20 @@ def update_status(worker_id, task_type, status, task_count=None):
     unique_key = f"{worker_id}_{task_type}"
     with _lock():
         state = _load_state()
-        _check_and_elect_leader(state, unique_key)
         if unique_key in state["workers"]:
             state["workers"][unique_key]["status"] = status
             if task_count is not None:
                 state["workers"][unique_key]["task_count"] = task_count
             state["workers"][unique_key]["last_active"] = time.time()
+            # 心跳：进入 BUSY 即视为执行了一次任务，刷新 leader 心跳
+            if status == WorkerStatus.BUSY.value:
+                state["workers"][unique_key]["last_busy_time"] = time.time()
             _save_state(state)
 
 
 def request_switch(worker_id, task_type):
-    """请求切换（只有主导任务能发起）
-    
+    """请求切换（主导任务发起；leader 失联/无任务时允许合格任务接管）
+
     参数:
         worker_id: 工作进程 ID
         task_type: 任务类型
@@ -162,12 +223,22 @@ def request_switch(worker_id, task_type):
     unique_key = f"{worker_id}_{task_type}"
     with _lock():
         state = _load_state()
-        _check_and_elect_leader(state, unique_key)
-        if state.get("leader") != unique_key:
+
+        # 判定是否允许切换（leader 心跳超时会触发接管）
+        allowed, took_over = _leader_takeover_allowed(state, unique_key, task_type)
+        if not allowed:
+            logging.info("request_switch denied for %s (leader=%s active)",
+                         unique_key, state.get("leader"))
             return False
-        #if state.get("switch_pending"):
-            # return False
-        # state["switch_pending"] = True
+
+        if took_over:
+            logging.info("Leader takeover via request_switch: %s takes over from %s",
+                         unique_key, state.get("leader"))
+            state["leader"] = unique_key
+            # 清理可能残留的切换状态，避免死锁
+            state.pop("switch_initiator", None)
+            state.pop("switch_start_time", None)
+
         state["switch_initiator"] = unique_key
         state["switch_start_time"] = time.time()
         _save_state(state)
