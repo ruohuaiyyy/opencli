@@ -291,6 +291,32 @@ function simpleHash(str: string): string {
   return hash.toString(16);
 }
 
+/** Check whether the Doubao chat input is rendered and usable.
+ *  A deleted/stale chat URL keeps the URL unchanged but renders no chat input,
+ *  so URL matching alone cannot tell whether the chat is usable.
+ */
+async function isChatInputReady(page: IPage): Promise<boolean> {
+  return await page.evaluate(`
+    (() => {
+      const selectors = [
+        'textarea[data-testid="chat_input_input"]',
+        '.chat-input textarea',
+        'textarea[placeholder*="发消息"]',
+        'textarea[placeholder*="Message"]',
+        'textarea',
+        // 2026-08: Doubao switched the input to a tiptap ProseMirror contenteditable div.
+        '[contenteditable="true"]',
+      ];
+      return selectors.some(sel => Array.from(document.querySelectorAll(sel)).some(el => {
+        if (!(el instanceof HTMLElement)) return false;
+        const style = window.getComputedStyle(el);
+        return style.display !== 'none' && style.visibility !== 'hidden'
+          && el.getBoundingClientRect().height > 0;
+      }));
+    })()
+  `).catch(() => false) as boolean;
+}
+
 /** Ensure we are on a Doubao chat page, with optional chat reuse. */
 async function ensureChatPage(
   page: IPage,
@@ -304,12 +330,17 @@ async function ensureChatPage(
     await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
     await page.wait(5); // Wait for SPA hydration + CDP stabilization
     const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
-    if (currentUrl?.includes(chatId)) {
+    const chatUsable = currentUrl?.includes(chatId) && await isChatInputReady(page);
+    if (chatUsable) {
       console.error(`📌 Using specified chat: ${chatId}`);
       return;
     }
-    // If navigation failed (invalid chat ID), fall through to normal flow
-    console.error(`⚠️ Chat ${chatId} not found (may be deleted), falling back to chat home`);
+    // Deleted/stale chat keeps the URL unchanged but renders no chat input.
+    // Open a new conversation instead of leaving the page unusable.
+    console.error(`⚠️ Chat ${chatId} has no chat input (may be deleted), opening a new chat`);
+    await page.goto(DOUBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
+    await page.wait(5);
+    return;
   }
 
   // If reuse requested, try to load last chat ID (account-aware)
@@ -320,13 +351,17 @@ async function ensureChatPage(
       await page.goto(targetUrl, { waitUntil: 'load', settleMs: 2500 });
       await page.wait(5); // Wait for SPA hydration + CDP stabilization
       const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
-      if (currentUrl?.includes(lastChatId)) {
+      const chatUsable = currentUrl?.includes(lastChatId) && await isChatInputReady(page);
+      if (chatUsable) {
         console.error(`📌 Reusing last chat: ${lastChatId} (account: ${account ?? 'legacy'})`);
         return;
       }
-      // Chat no longer exists - clear saved ID and fall back
+      // Chat no longer exists - clear saved ID and open a new chat
       clearDoubaoLastChatId(account);
-      console.error(`⚠️ Last chat ${lastChatId} not found (may be deleted), cleared cache and falling back`);
+      console.error(`⚠️ Last chat ${lastChatId} has no chat input (may be deleted), cleared cache and opening a new chat`);
+      await page.goto(DOUBAO_CHAT_URL, { waitUntil: 'load', settleMs: 2500 });
+      await page.wait(5);
+      return;
     } else {
       console.error('ℹ️ No saved chat found, using default flow');
     }
@@ -335,8 +370,9 @@ async function ensureChatPage(
   // Check if already on a chat page (prefer specific chat over home)
   const currentUrl = await page.evaluate('window.location.href').catch(() => '') as string;
   if (typeof currentUrl === 'string' && currentUrl.includes('doubao.com/chat')) {
-    // If already on a specific chat page, stay here
-    if (extractChatId(currentUrl)) {
+    // Stay only if this is a specific chat page with a usable input.
+    // A stale chat URL keeps its ID but renders no input, so fall through.
+    if (extractChatId(currentUrl) && await isChatInputReady(page)) {
       return;
     }
     // On chat home, will try to switch to a specific chat below
@@ -359,12 +395,15 @@ async function ensureChatPage(
         return score(b) - score(a);
       });
 
-    if (doubaoTabs.length > 0) {
-      await page.selectTab(doubaoTabs[0].index);
+    for (const tab of doubaoTabs) {
+      await page.selectTab(tab.index).catch(() => {});
       await page.wait(0.8);
       // Wait for CDP session to fully stabilize after tab switch (prevents Detached errors)
       await page.wait(2);
-      return;
+      // Skip stale chat tabs: they keep the chat URL but render no input.
+      if (await isChatInputReady(page)) {
+        return;
+      }
     }
   }
 
@@ -612,24 +651,7 @@ export const referencesCommand = cli({
 
     // Wait for chat input to be ready (replaces fixed 1s wait)
     // Doubao is a React SPA that needs time to hydrate and render components
-    const inputReady = await page.evaluate(`
-      (() => {
-        const selectors = [
-          'textarea[data-testid="chat_input_input"]',
-          '.chat-input textarea',
-          'textarea[placeholder*="发消息"]',
-          'textarea[placeholder*="Message"]',
-          'textarea',
-          // 2026-08: Doubao switched the input to a tiptap ProseMirror contenteditable div.
-          '[contenteditable="true"]',
-        ];
-        for (const sel of selectors) {
-          const el = document.querySelector(sel);
-          if (el && el.offsetHeight > 0) return true;
-        }
-        return false;
-      })()
-    `) as boolean;
+    const inputReady = await isChatInputReady(page);
 
     // If input not ready, poll up to 15 seconds
     if (!inputReady) {
@@ -637,13 +659,7 @@ export const referencesCommand = cli({
       let ready = false;
       for (let i = 0; i < maxWaits; i++) {
         await page.wait(0.5);
-        const check = await page.evaluate(`
-          (() => {
-            const el = document.querySelector('textarea[data-testid="chat_input_input"], textarea[placeholder*="发消息"], textarea, [contenteditable="true"]');
-            return el && el.offsetHeight > 0;
-          })()
-        `) as boolean;
-        if (check) { ready = true; break; }
+        if (await isChatInputReady(page)) { ready = true; break; }
       }
       if (!ready) {
         return [{
